@@ -152,3 +152,9 @@ fn dynamic_import_generics_and_type_references_parse() {
     ]);
     assert_eq!(json(&output)["summary"]["scan_errors"], 0);
 }
+
+#[test]
+fn multiline_imports_do_not_create_empty_bindings() {
+    let source = "from ..domain.work import (\n    AgentConfig,\n    BeatContent,\n    PreviousChapter,\n    ProseContent,\n    ProseEditDraft,\n    SettingContent,\n)\n\ndef use_all():\n    return (\n        AgentConfig,\n        BeatContent,\n        PreviousChapter,\n        ProseContent,\n        ProseEditDraft,\n        SettingContent,\n    )\n";
+    assert_empty(&scan("py", source));
+}

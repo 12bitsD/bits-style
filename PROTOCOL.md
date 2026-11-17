@@ -24,7 +24,7 @@ bits style report [paths...] [options]
 --commit <commit>     指定 diff 的比较基线；必须搭配 --diff
 --format <format>     text、json、jsonl、sarif
 --output <file>       写入文件；未指定时写 stdout
---jobs <n>            并行扫描数量，不改变输出顺序
+--jobs <n>            并行扫描数量；默认使用 CPU 并行度（上限 8），不改变输出顺序
 --config <file>       指定扫描配置
 --baseline <file>     使用既有 JSON 报告作为存量违规基线
 --no-ignore           不读取 .gitignore，但仍排除 .git 和扫描器自身产物
@@ -117,7 +117,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.3.2" },
+  "tool": { "name": "bits", "version": "0.3.3" },
   "style": { "name": "Bits’s Coding Style", "version": "0.3" },
   "status": "warning",
   "coverage": {

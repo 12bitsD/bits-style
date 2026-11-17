@@ -104,6 +104,10 @@ bits style check . --config bits.toml
 
 扫描默认遵循 `.gitignore`，并排除 `.git`、依赖目录、构建目录和常见生成文件。测试代码适用同样的语义规则。
 
+## 性能
+
+默认 `--jobs` 使用 CPU 并行度（上限 8），输出顺序与串行一致。函数嵌套和圈复杂度合并为一次 AST 遍历，标识符计数不再为每个 import 编译正则，字符串和类型范围使用排序索引。详见 [PERFORMANCE.md](docs/PERFORMANCE.md)。
+
 ## 自动修复边界
 
 `fix` 只处理 Profile 缩进、行尾空白和文件末尾换行，不改变字符串内容。它不会重命名、删除代码、拆分函数、修改依赖或改变控制流。修复后必须重新扫描，连续执行两次不得产生新的 diff。
@@ -124,7 +128,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-79 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+81 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 

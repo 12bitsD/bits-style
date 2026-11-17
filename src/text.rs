@@ -15,16 +15,13 @@ pub fn scan(
     strings: &[Range<usize>],
     comments: &[Range<usize>],
 ) -> Vec<Violation> {
+    let mut strings = strings.to_vec();
+    strings.sort_unstable_by_key(|range| range.start);
     let mut violations = Vec::new();
     let mut offset = 0;
-    for line in source.split_inclusive('\n') {
+    for (line_number, line) in (1..).zip(source.split_inclusive('\n')) {
         let content = line.strip_suffix('\n').unwrap_or(line);
         let content = content.strip_suffix('\r').unwrap_or(content);
-        let line_number = source[..offset]
-            .bytes()
-            .filter(|byte| *byte == b'\n')
-            .count()
-            + 1;
         let leading_len = content.len() - content.trim_start_matches([' ', '\t']).len();
         let leading = &content[..leading_len];
         let mixed = leading.contains(' ') && leading.contains('\t');
@@ -32,7 +29,7 @@ pub fn scan(
             Language::C | Language::Cpp => leading.contains(' '),
             _ => leading.contains('\t'),
         };
-        if (mixed || wrong_profile) && !inside_any(strings, offset) {
+        if (mixed || wrong_profile) && !inside_any(&strings, offset) {
             let expected = match language {
                 Language::C | Language::Cpp => "tabs,width=8",
                 Language::Python => "spaces,width=4",
@@ -50,7 +47,7 @@ pub fn scan(
             ));
         }
         let trimmed = content.trim_end_matches([' ', '\t']);
-        if trimmed.len() != content.len() && !inside_any(strings, offset + trimmed.len()) {
+        if trimmed.len() != content.len() && !inside_any(&strings, offset + trimmed.len()) {
             violations.push(Violation::new(
                 "BCS001",
                 relative,
@@ -63,7 +60,7 @@ pub fn scan(
             ));
         }
         let columns = content.chars().count();
-        if columns > 80 && !long_string_exception(strings, offset, content) {
+        if columns > 80 && !long_string_exception(&strings, offset, content) {
             violations.push(Violation::new(
                 "BCS002",
                 relative,
@@ -161,13 +158,14 @@ pub fn fix(
     language: Language,
     line_scope: &LineScope,
 ) -> (String, Vec<AppliedFix>) {
+    let mut strings = strings.to_vec();
+    strings.sort_unstable_by_key(|range| range.start);
     let mut output = String::with_capacity(source.len() + 16);
     let mut offset = 0;
     let mut indentation_fixes = 0;
     let mut trailing_fixes = 0;
-    let mut line_number = 1;
 
-    for line in source.split_inclusive('\n') {
+    for (line_number, line) in (1..).zip(source.split_inclusive('\n')) {
         let ending = if line.ends_with("\r\n") {
             "\r\n"
         } else if line.ends_with('\n') {
@@ -184,10 +182,9 @@ pub fn fix(
             output.push_str(content);
             output.push_str(ending);
             offset += line.len();
-            line_number += 1;
             continue;
         }
-        if inside_any(strings, offset) {
+        if inside_any(&strings, offset) {
             output.push_str(content);
         } else {
             let leading_len = content.len() - content.trim_start_matches([' ', '\t']).len();
@@ -213,7 +210,7 @@ pub fn fix(
             let rest = &content[leading_len..];
             let trimmed = rest.trim_end_matches([' ', '\t']);
             let trailing_start = offset + leading_len + trimmed.len();
-            if inside_any(strings, trailing_start) {
+            if inside_any(&strings, trailing_start) {
                 output.push_str(rest);
             } else {
                 trailing_fixes += usize::from(trimmed.len() != rest.len());
@@ -222,7 +219,6 @@ pub fn fix(
         }
         output.push_str(ending);
         offset += line.len();
-        line_number += 1;
     }
 
     let mut newline_fixes = 0;
@@ -242,9 +238,8 @@ pub fn fix(
 }
 
 fn inside_any(ranges: &[Range<usize>], offset: usize) -> bool {
-    ranges
-        .iter()
-        .any(|range| range.start < offset && offset < range.end)
+    let index = ranges.partition_point(|range| range.start <= offset);
+    index > 0 && ranges[..index].iter().any(|range| range.end > offset)
 }
 
 fn long_string_exception(strings: &[Range<usize>], line_start: usize, content: &str) -> bool {

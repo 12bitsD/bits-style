@@ -254,6 +254,7 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
     if language.is_c_like() {
         analyze_inline(root, relative, source, &mut result.violations);
     }
+    result.jsx.sort_unstable_by_key(|range| range.start);
     analyze_spacing(
         language,
         relative,
@@ -307,7 +308,7 @@ fn analyze_function(
         );
     }
 
-    let nesting = max_nesting(node, 0);
+    let (nesting, complexity) = function_metrics(node);
     if nesting > 3 {
         push_function(
             violations,
@@ -323,7 +324,6 @@ fn analyze_function(
         }
     }
 
-    let complexity = cyclomatic_complexity(node);
     if complexity > 10 {
         push_function(
             violations,
@@ -467,6 +467,10 @@ fn code_line_count(
     strings: &[Range<usize>],
     type_ranges: &[Range<usize>],
 ) -> usize {
+    let mut ignored = comments.to_vec();
+    ignored.extend_from_slice(strings);
+    ignored.extend_from_slice(type_ranges);
+    ignored.sort_unstable_by_key(|range| range.start);
     let mut lines = 0;
     let bytes = source.as_bytes();
     let mut line_start = function.start_byte();
@@ -483,17 +487,17 @@ fn code_line_count(
             .enumerate()
             .any(|(index, byte)| {
                 let offset = line_start + index;
-                !byte.is_ascii_whitespace()
-                    && !comments
-                        .iter()
-                        .chain(strings)
-                        .chain(type_ranges)
-                        .any(|range| range.start <= offset && offset < range.end)
+                !byte.is_ascii_whitespace() && !inside_sorted_ranges(&ignored, offset)
             });
         lines += usize::from(has_code);
         line_start = line_end;
     }
     lines
+}
+
+fn inside_sorted_ranges(ranges: &[Range<usize>], offset: usize) -> bool {
+    let index = ranges.partition_point(|range| range.start <= offset);
+    index > 0 && ranges[..index].iter().any(|range| range.end > offset)
 }
 
 fn parameter_name(source: &str, parameter: Node) -> Option<String> {
@@ -572,32 +576,23 @@ fn analyze_parameter_mutability(
     });
 }
 
-fn max_nesting(function: Node, depth: usize) -> usize {
-    fn recurse(node: Node, depth: usize, root: Node, source_language: Language) -> usize {
+fn function_metrics(function: Node) -> (usize, usize) {
+    fn recurse(
+        node: Node,
+        root: Node,
+        depth: usize,
+        maximum_nesting: &mut usize,
+        complexity: &mut usize,
+    ) {
         if node.id() != root.id() && is_function(node.kind()) {
-            return depth;
+            return;
         }
-        let next = if is_nesting_construct(source_language, node.kind()) {
+        let next_depth = if is_nesting_construct(Language::C, node.kind()) {
             depth + 1
         } else {
             depth
         };
-        let mut maximum = next;
-        for index in 0..node.named_child_count() {
-            if let Some(child) = node.named_child(index as u32) {
-                maximum = maximum.max(recurse(child, next, root, source_language));
-            }
-        }
-        maximum
-    }
-    recurse(function, depth, function, Language::C)
-}
-
-fn cyclomatic_complexity(function: Node) -> usize {
-    fn recurse(node: Node, root: Node, complexity: &mut usize) {
-        if node.id() != root.id() && is_function(node.kind()) {
-            return;
-        }
+        *maximum_nesting = (*maximum_nesting).max(next_depth);
         if matches!(
             node.kind(),
             "if_statement"
@@ -612,15 +607,8 @@ fn cyclomatic_complexity(function: Node) -> usize {
                 | "ternary_expression"
                 | "elif_clause"
                 | "boolean_operator"
-                | "binary_expression"
         ) {
-            let increment = match node.kind() {
-                "binary_expression" => usize::from(matches!(node.kind(), "binary_expression")),
-                _ => 1,
-            };
-            if node.kind() != "binary_expression" {
-                *complexity += increment;
-            }
+            *complexity += 1;
         }
         if node.kind() == "binary_expression"
             && let Some(operator) = node.child_by_field_name("operator")
@@ -630,13 +618,14 @@ fn cyclomatic_complexity(function: Node) -> usize {
         }
         for index in 0..node.named_child_count() {
             if let Some(child) = node.named_child(index as u32) {
-                recurse(child, root, complexity);
+                recurse(child, root, next_depth, maximum_nesting, complexity);
             }
         }
     }
+    let mut nesting = 0;
     let mut complexity = 1;
-    recurse(function, function, &mut complexity);
-    complexity
+    recurse(function, function, 0, &mut nesting, &mut complexity);
+    (nesting, complexity)
 }
 
 fn collect_locals(language: Language, source: &str, function: Node) -> BTreeSet<String> {
@@ -1212,6 +1201,9 @@ fn analyze_import(
                         .trim()
                         .trim_matches(|character| matches!(character, '(' | ')' | '\\'));
                     let binding = name.split(" as ").last().unwrap_or(name).trim();
+                    if binding.is_empty() {
+                        continue;
+                    }
                     record(module.to_owned(), Some(binding.to_owned()), false);
                 }
             } else {
@@ -1656,10 +1648,7 @@ fn analyze_spacing(
     for (index, line) in masked.lines().enumerate() {
         let line_number = index + 1;
         let line_end = line_start + line.len() + 1;
-        if jsx
-            .iter()
-            .any(|range| range.start < line_end && range.end > line_start)
-        {
+        if ranges_overlap(jsx, line_start, line_end) {
             line_start = line_end;
             continue;
         }
@@ -1770,6 +1759,11 @@ fn analyze_spacing(
         }
         line_start = line_end;
     }
+}
+
+fn ranges_overlap(ranges: &[Range<usize>], start: usize, end: usize) -> bool {
+    let index = ranges.partition_point(|range| range.start < end);
+    index > 0 && ranges[..index].iter().any(|range| range.end > start)
 }
 
 fn mask_ranges(
@@ -2145,10 +2139,28 @@ fn valid_pascal_case(name: &str) -> bool {
 }
 
 fn count_identifier(source: &str, name: &str) -> usize {
-    let Ok(regex) = Regex::new(&format!(r"\b{}\b", regex::escape(name))) else {
-        return 2;
-    };
-    regex.find_iter(source).count()
+    if name.is_empty() {
+        return 0;
+    }
+    let mut count = 0;
+    let mut offset = 0;
+    while let Some(index) = source[offset..].find(name) {
+        let start = offset + index;
+        let end = start + name.len();
+        let boundary_before = source[..start]
+            .chars()
+            .next_back()
+            .is_none_or(|character| !character.is_alphanumeric() && character != '_');
+        let boundary_after = source[end..]
+            .chars()
+            .next()
+            .is_none_or(|character| !character.is_alphanumeric() && character != '_');
+        if boundary_before && boundary_after {
+            count += 1;
+        }
+        offset = end;
+    }
+    count
 }
 
 fn contains_word(text: &str, word: &str) -> bool {

@@ -68,7 +68,7 @@ struct ScanArgs {
     format: Option<OutputFormat>,
     #[arg(long)]
     output: Option<PathBuf>,
-    #[arg(long, default_value_t = 1)]
+    #[arg(long, default_value_t = default_jobs())]
     jobs: usize,
     #[arg(long)]
     config: Option<PathBuf>,
@@ -78,6 +78,10 @@ struct ScanArgs {
     include_passed: bool,
     #[arg(long)]
     baseline: Option<PathBuf>,
+}
+
+fn default_jobs() -> usize {
+    std::thread::available_parallelism().map_or(1, |parallelism| parallelism.get().min(8))
 }
 
 #[derive(Debug, Default, Deserialize)]
