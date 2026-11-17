@@ -13,18 +13,18 @@
 |---|---|---|---|---|
 | `BCS001` | partial | partial | partial | 禁止混用及错误缩进字符，处理行尾空白和末尾换行；续行与连续块宽度未完整判定 |
 | `BCS002` | partial | partial | partial | 默认 80 列；字符串字面量保守识别用户文本、日志和 URL；续行由 Profile formatter 决定 |
-| `BCS003` | partial | partial | partial | 四项规模指标产生 warning，优先提示拆分；支持 `bits:explain` 和 `explanation` 字段；扁平 case 豁免 |
-| `BCS004` | partial | partial | partial | 参数数量、布尔参数和 C/C++ 参数名；外部签名使用行级豁免 |
+| `BCS003` | partial | partial | partial | 行数和局部变量为 warning；真实嵌套和圈复杂度为 violation；多行类型声明不计行数；支持 `bits:explain` |
+| `BCS004` | partial | partial | partial | 参数数量为 warning；直接布尔行为参数保留检查，对象布尔字段跳过；签名豁免覆盖整个函数签名 |
 | `BCS005` | partial | partial | partial | 冗余 else；C 限制 goto，C++ 禁止 goto；查表属于 REVIEW |
 | `BCS006` | partial | partial | partial | 每行语句、条件/链式赋值、逗号表达式、嵌套三元、双重否定；混合运算符覆盖仍不完整 |
 | `BCS007` | supported | not_applicable | supported | 所有控制块必须加大括号；C/C++ 函数 `{` 下一行，JS/TS 同行 |
 | `BCS008` | partial | not_applicable | partial | C/C++ case 对齐 switch；JS/TS 使用一级缩进；fallthrough 采用保守检查 |
-| `BCS009` | partial | partial | TSX 为低置信 warning；其他为 partial | 常见确定性格式问题；JSX 区域交给 formatter，普通 TS/JS 使用受限文本检查 |
-| `BCS010` | partial | partial | partial | C/Python 使用 lower_snake_case；JS/TS 使用 lowerCamelCase；类型 PascalCase、常量 UPPER_SNAKE_CASE |
+| `BCS009` | partial | partial | TSX 为低置信 warning；其他为 partial | 运算符空白按 AST 左右节点判断；多行 closing ) 不报 padding；JSX 区域交给 formatter |
+| `BCS010` | partial | partial | partial | 命名为 warning；C/Python 使用 lower_snake_case；JS/TS 使用 lowerCamelCase；模块级字面量常量 UPPER_SNAKE_CASE，普通 const 局部变量、对象和数组按普通变量 |
 | `BCS011` | partial | partial | partial | 常见可变全局及容器常量、直接环境读取、直接参数重赋值和部分参数遮蔽；完整作用域与全部隐藏输入不自动判定 |
 | `BCS012` | partial | not_applicable | not_applicable | C/C++ 宏、inline 和函数内条件编译；宏的全部调用方语义不完整 |
-| `BCS013` | C++ partial；C 异常语法 N/A、非 void 返回值检查未实现 | partial | partial | 空 catch/except、常见伪造成功、catch-all 重抛或边界转换；复杂业务错误语义属于 REVIEW |
-| `BCS014` | partial | partial | partial | 通配符/简单未使用导入、相对依赖环、不可达代码和疑似注释旧代码；不是完整语义可达性分析 |
+| `BCS013` | C++ partial；C 异常语法 N/A、非 void 返回值检查未实现 | partial | partial | 空 catch 为硬错误；预期 false/null 失败结果和边界转换为 warning；复杂业务错误语义属于 REVIEW |
+| `BCS014` | partial | partial | partial | 依赖环、不可达代码为硬错误；type-only import 按 binding 统计；注释旧代码只匹配明确语句形态并为 warning |
 | `BCS015` | supported | supported | supported | TODO 格式、行级豁免格式、editor modeline；注释内容属于 REVIEW |
 
 ## 文件扩展名

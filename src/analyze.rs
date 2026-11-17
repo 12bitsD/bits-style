@@ -8,6 +8,8 @@ use tree_sitter::{Node, Tree};
 use crate::language::Language;
 use crate::model::{Coverage, Violation};
 
+type IgnoredRanges<'a> = (&'a [Range<usize>], &'a [Range<usize>], &'a [Range<usize>]);
+
 #[derive(Debug, Clone)]
 pub struct ImportRecord {
     pub specifier: String,
@@ -23,6 +25,7 @@ pub struct SyntaxAnalysis {
     pub strings: Vec<Range<usize>>,
     pub comments: Vec<Range<usize>>,
     pub jsx: Vec<Range<usize>>,
+    pub type_ranges: Vec<Range<usize>>,
     pub imports: Vec<ImportRecord>,
     pub executed: BTreeSet<String>,
     pub partial: BTreeSet<String>,
@@ -42,6 +45,16 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         }
         if kind.starts_with("jsx_") {
             result.jsx.push(node.byte_range());
+        }
+        if matches!(
+            kind,
+            "type_alias_declaration"
+                | "interface_declaration"
+                | "enum_declaration"
+                | "enum_specifier"
+                | "struct_specifier"
+        ) {
+            result.type_ranges.push(node.byte_range());
         }
     });
     result.executed.extend(
@@ -83,8 +96,7 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
                 relative,
                 source,
                 node,
-                &result.comments,
-                &result.strings,
+                (&result.comments, &result.strings, &result.type_ranges),
                 &mut result.violations,
             );
         }
@@ -139,6 +151,9 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             }
             "call_expression" | "call" => {
                 analyze_hidden_input(language, relative, source, node, &mut result.violations)
+            }
+            "binary_expression" => {
+                analyze_binary_operator(relative, source, node, &mut result.violations);
             }
             "assignment_expression" => {
                 if node
@@ -242,13 +257,13 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         &result.jsx,
         &mut result.violations,
     );
-    if language == Language::Tsx {
-        for violation in result
-            .violations
-            .iter_mut()
-            .filter(|violation| violation.rule_id == "BCS009")
-        {
-            violation.severity = "warning".to_owned();
+    for violation in result
+        .violations
+        .iter_mut()
+        .filter(|violation| matches!(violation.rule_id.as_str(), "BCS009" | "BCS010"))
+    {
+        violation.severity = "warning".to_owned();
+        if violation.rule_id == "BCS009" && language == Language::Tsx {
             violation.confidence = "low".to_owned();
         }
     }
@@ -260,10 +275,10 @@ fn analyze_function(
     relative: &str,
     source: &str,
     node: Node,
-    comments: &[Range<usize>],
-    strings: &[Range<usize>],
+    ignored: IgnoredRanges,
     violations: &mut Vec<Violation>,
 ) {
+    let (comments, strings, type_ranges) = ignored;
     if language != Language::Python
         && let Some(body) = node.child_by_field_name("body")
         && is_block(body)
@@ -273,7 +288,7 @@ fn analyze_function(
     let react_component = function_name(node)
         .is_some_and(|name| is_react_component(language, node, node_text(source, name)));
 
-    let lines = code_line_count(source, node, comments, strings);
+    let lines = code_line_count(source, node, comments, strings, type_ranges);
     if lines > 48 {
         push_function(
             violations,
@@ -297,6 +312,9 @@ fn analyze_function(
             nesting,
             "<=3",
         );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "violation".to_owned();
+        }
     }
 
     let complexity = cyclomatic_complexity(node);
@@ -310,6 +328,9 @@ fn analyze_function(
             complexity,
             "<=10",
         );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "violation".to_owned();
+        }
     }
 
     let locals = collect_locals(language, source, node);
@@ -328,7 +349,7 @@ fn analyze_function(
     if let Some(parameters) = find_parameters(node) {
         let params = parameter_nodes(language, parameters);
         if params.len() > 4 {
-            push_actual(
+            push_function_contract(
                 violations,
                 relative,
                 parameters,
@@ -337,6 +358,9 @@ fn analyze_function(
                 params.len(),
                 "<=4",
             );
+            if let Some(violation) = violations.last_mut() {
+                violation.severity = "warning".to_owned();
+            }
         }
         let parameter_names = params
             .iter()
@@ -345,7 +369,7 @@ fn analyze_function(
         for parameter in params {
             let text = node_text(source, parameter);
             if is_boolean_parameter(language, text) && !react_component {
-                push(
+                push_function_contract(
                     violations,
                     relative,
                     parameter,
@@ -356,7 +380,7 @@ fn analyze_function(
                 );
             }
             if language.is_c_like() && is_unnamed_c_parameter(parameter) {
-                push(
+                push_function_contract(
                     violations,
                     relative,
                     parameter,
@@ -434,6 +458,7 @@ fn code_line_count(
     function: Node,
     comments: &[Range<usize>],
     strings: &[Range<usize>],
+    type_ranges: &[Range<usize>],
 ) -> usize {
     let mut lines = 0;
     let bytes = source.as_bytes();
@@ -455,6 +480,7 @@ fn code_line_count(
                     && !comments
                         .iter()
                         .chain(strings)
+                        .chain(type_ranges)
                         .any(|range| range.start <= offset && offset < range.end)
             });
         lines += usize::from(has_code);
@@ -464,6 +490,9 @@ fn code_line_count(
 }
 
 fn parameter_name(source: &str, parameter: Node) -> Option<String> {
+    if matches!(parameter.kind(), "object_pattern" | "array_pattern") {
+        return None;
+    }
     if parameter.kind() == "identifier" {
         return Some(node_text(source, parameter).to_owned());
     }
@@ -655,6 +684,43 @@ fn collect_pattern_identifiers(source: &str, node: Node, names: &mut BTreeSet<St
         if let Some(child) = node.named_child(index as u32) {
             collect_pattern_identifiers(source, child, names);
         }
+    }
+}
+
+fn analyze_binary_operator(
+    relative: &str,
+    source: &str,
+    node: Node,
+    violations: &mut Vec<Violation>,
+) {
+    let Some(left) = node.child_by_field_name("left") else {
+        return;
+    };
+    let Some(right) = node.child_by_field_name("right") else {
+        return;
+    };
+    if left.end_position().row != right.start_position().row {
+        return;
+    }
+    let gap = &source[left.end_byte()..right.start_byte()];
+    let operator = node
+        .child_by_field_name("operator")
+        .map(|operator| node_text(source, operator))
+        .unwrap_or_else(|| gap.trim());
+    if operator.is_empty() {
+        return;
+    }
+    let expected = format!(" {operator} ");
+    if gap != expected {
+        push(
+            violations,
+            relative,
+            node,
+            "BCS009",
+            "binary operators must have one space on each side",
+            gap,
+            expected,
+        );
     }
 }
 
@@ -1001,6 +1067,10 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
                 text,
                 "handle_or_rethrow",
             );
+            if let Some(violation) = violations.last_mut() {
+                violation.severity = "warning".to_owned();
+                violation.confidence = "low".to_owned();
+            }
         }
     }
 }
@@ -1350,8 +1420,13 @@ fn analyze_variable(
             name.kind(),
             "identifier" | "shorthand_property_identifier_pattern"
         ) {
-            let is_constant =
-                text.trim_start().starts_with("const ") || node.kind() == "preproc_def";
+            let is_constant = (global
+                && (text.trim_start().starts_with("const ")
+                    || node.parent().is_some_and(|parent| {
+                        node_text(source, parent).trim_start().starts_with("const ")
+                    }))
+                && is_literal_constant_value(text))
+                || node.kind() == "preproc_def";
             if is_constant {
                 if !valid_upper_snake(name_text) {
                     push(
@@ -1382,6 +1457,13 @@ fn analyze_variable(
             }
         }
     }
+}
+
+fn is_literal_constant_value(text: &str) -> bool {
+    let value = text.split_once('=').map_or("", |parts| parts.1.trim());
+    value.starts_with(['\"', '\'', '`'])
+        || value.parse::<f64>().is_ok()
+        || matches!(value, "true" | "false")
 }
 
 fn analyze_hidden_input(
@@ -1454,11 +1536,9 @@ fn analyze_spacing(
     static KEYWORD: OnceLock<Regex> = OnceLock::new();
     static CALL: OnceLock<Regex> = OnceLock::new();
     static INNER: OnceLock<Regex> = OnceLock::new();
-    static BINARY: OnceLock<Regex> = OnceLock::new();
     let keyword = KEYWORD.get_or_init(|| Regex::new(r"\b(if|switch|for|while|catch)\(").unwrap());
     let call = CALL.get_or_init(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)[ \t]+\(").unwrap());
     let inner = INNER.get_or_init(|| Regex::new(r"\([ \t]+[^()\n]*[ \t]+\)").unwrap());
-    let binary = BINARY.get_or_init(|| Regex::new(r"(\S)(==|!=|<=|>=|&&|\|\||=)(\S)").unwrap());
     let mut line_start = 0;
     for (index, line) in masked.lines().enumerate() {
         let line_number = index + 1;
@@ -1528,23 +1608,6 @@ fn analyze_spacing(
                 false,
             ));
         }
-        for found in binary.captures_iter(line) {
-            let left = found.get(1).map_or("", |capture| capture.as_str());
-            let right = found.get(3).map_or("", |capture| capture.as_str());
-            if left.chars().all(is_operator_character) || right.chars().all(is_operator_character) {
-                continue;
-            }
-            violations.push(Violation::new(
-                "BCS009",
-                relative,
-                line_number,
-                found.get(0).map_or(0, |capture| capture.start()) + 1,
-                "binary operators must have one space on each side",
-                found.get(0).map_or("", |capture| capture.as_str()),
-                "left op right",
-                false,
-            ));
-        }
         let member_access = line.find(" . ").or_else(|| {
             if language.is_c_like() || language.is_script() {
                 line.find(" -> ")
@@ -1566,27 +1629,6 @@ fn analyze_spacing(
         }
         line_start = line_end;
     }
-}
-
-fn is_operator_character(character: char) -> bool {
-    matches!(
-        character,
-        '=' | '!'
-            | '<'
-            | '>'
-            | '+'
-            | '-'
-            | '*'
-            | '/'
-            | '%'
-            | '&'
-            | '|'
-            | '^'
-            | '?'
-            | '~'
-            | ':'
-            | '.'
-    )
 }
 
 fn mask_ranges(source: &str, strings: &[Range<usize>], comments: &[Range<usize>]) -> String {
@@ -1795,6 +1837,9 @@ fn parameter_nodes(language: Language, parameters: Node) -> Vec<Node> {
 }
 
 fn is_boolean_parameter(language: Language, text: &str) -> bool {
+    if text.trim_start().starts_with(['{', '[']) {
+        return false;
+    }
     match language {
         Language::Python => text.contains(": bool") || text.contains(":bool"),
         _ if language.is_script() => text.contains(": boolean") || text.contains(":boolean"),
@@ -1951,6 +1996,21 @@ fn contains_word(text: &str, word: &str) -> bool {
 
 fn node_text<'a>(source: &'a str, node: Node) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
+}
+
+fn push_function_contract(
+    violations: &mut Vec<Violation>,
+    relative: &str,
+    node: Node,
+    rule: &str,
+    message: &str,
+    actual: impl Into<serde_json::Value>,
+    expected: impl Into<serde_json::Value>,
+) {
+    push_function(violations, relative, node, rule, message, actual, expected);
+    if let Some(violation) = violations.last_mut() {
+        violation.severity = "violation".to_owned();
+    }
 }
 
 fn push_function(

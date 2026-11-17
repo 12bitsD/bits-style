@@ -138,7 +138,7 @@ pub fn scan(
             ));
         }
         if looks_like_commented_code(text) {
-            violations.push(Violation::new(
+            let mut violation = Violation::new(
                 "BCS014",
                 relative,
                 point.0,
@@ -147,7 +147,9 @@ pub fn scan(
                 text.lines().next().unwrap_or("").trim(),
                 "no_commented_code",
                 false,
-            ));
+            );
+            violation.severity = "warning".to_owned();
+            violations.push(violation);
         }
     }
     violations
@@ -303,11 +305,12 @@ fn looks_like_commented_code(text: &str) -> bool {
     if body.starts_with("bits:allow") || body.starts_with("bits:explain") {
         return false;
     }
-    let code_tokens = [
-        "return ", "if (", "if(", "for (", "while (", " = ", ";", "{", "}", "=>",
-    ];
+    static CODE: OnceLock<Regex> = OnceLock::new();
+    let code = CODE.get_or_init(|| {
+        Regex::new(r"^(?:return\s+.+|if\s*\(|for\s*\(|while\s*\(|switch\s*\(|(?:const|let|var)\s+[A-Za-z_]\w*\s*=|function\s+[A-Za-z_]\w*\s*\(|import\s+.+|export\s+.+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*=|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\([^)]*\);?)$").unwrap()
+    });
     body.lines().count() <= 3
-        && code_tokens.iter().any(|token| body.contains(token))
+        && body.lines().map(str::trim).any(|line| code.is_match(line))
         && !body.contains("TODO")
         && body.len() < 240
 }
@@ -348,6 +351,25 @@ pub fn apply_inline_suppressions(
         }
     }
     violations.retain(|violation| {
+        if violation.rule_id == "BCS004" {
+            return !allowed.iter().any(|(rule, line)| {
+                rule == &violation.rule_id
+                    && (*line >= violation.range.start.line && *line <= violation.range.end.line)
+            });
+        }
         !allowed.contains(&(violation.rule_id.clone(), violation.range.start.line))
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::looks_like_commented_code;
+
+    #[test]
+    fn detects_only_statement_shaped_comments() {
+        assert!(looks_like_commented_code("// return value;"));
+        assert!(!looks_like_commented_code(
+            "// 这里包含分号、括号和花括号，用于解释业务约束；不是旧实现。"
+        ));
+    }
 }
