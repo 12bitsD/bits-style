@@ -78,11 +78,8 @@ fn unsupported_languages_are_explicit_and_do_not_pass() {
     assert_eq!(report.status.code(), Some(0));
     let report = json(&report);
     assert_eq!(report["status"], "unsupported");
-    assert_eq!(report["summary"]["unsupported_files"], 2);
-    assert_eq!(
-        report["unsupported"],
-        serde_json::json!(["lib.rs", "main.go"])
-    );
+    assert_eq!(report["summary"]["unsupported_files"], 1);
+    assert_eq!(report["unsupported"], serde_json::json!(["main.go"]));
 
     let check = bits(&[
         "style",

@@ -46,6 +46,7 @@ fn valid_files_pass_in_every_reference_language() {
         "valid/sample.js",
         "valid/sample.ts",
         "valid/sample.tsx",
+        "valid/sample.rs",
     ] {
         let output = bits(&["style", "check", &fixture(file)]);
         assert_eq!(
@@ -89,6 +90,10 @@ fn invalid_files_report_expected_rule_ids() {
                 "BCS001", "BCS004", "BCS005", "BCS009", "BCS010", "BCS011", "BCS014",
             ]
             .as_slice(),
+        ),
+        (
+            "invalid/sample.rs",
+            ["BCS004", "BCS010", "BCS011", "BCS014"].as_slice(),
         ),
     ] {
         let output = bits(&["style", "check", &fixture(file), "--format", "json"]);

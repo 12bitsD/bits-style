@@ -10,6 +10,7 @@ pub enum Language {
     JavaScript,
     TypeScript,
     Tsx,
+    Rust,
 }
 
 impl Language {
@@ -22,6 +23,7 @@ impl Language {
             "js" | "jsx" | "mjs" | "cjs" => Some(Self::JavaScript),
             "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "tsx" => Some(Self::Tsx),
+            "rs" => Some(Self::Rust),
             _ => None,
         }
     }
@@ -34,6 +36,7 @@ impl Language {
             Self::JavaScript => "javascript",
             Self::TypeScript => "typescript",
             Self::Tsx => "tsx",
+            Self::Rust => "rust",
         }
     }
 
@@ -45,6 +48,10 @@ impl Language {
         matches!(self, Self::JavaScript | Self::TypeScript | Self::Tsx)
     }
 
+    pub fn is_rust(self) -> bool {
+        self == Self::Rust
+    }
+
     pub fn ts_language(self) -> TsLanguage {
         match self {
             Self::C => tree_sitter_c::LANGUAGE.into(),
@@ -53,6 +60,7 @@ impl Language {
             Self::JavaScript => tree_sitter_javascript::LANGUAGE.into(),
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
+            Self::Rust => tree_sitter_rust::LANGUAGE.into(),
         }
     }
 

@@ -158,3 +158,41 @@ fn multiline_imports_do_not_create_empty_bindings() {
     let source = "from ..domain.work import (\n    AgentConfig,\n    BeatContent,\n    PreviousChapter,\n    ProseContent,\n    ProseEditDraft,\n    SettingContent,\n)\n\ndef use_all():\n    return (\n        AgentConfig,\n        BeatContent,\n        PreviousChapter,\n        ProseContent,\n        ProseEditDraft,\n        SettingContent,\n    )\n";
     assert_empty(&scan("py", source));
 }
+
+#[test]
+fn rust_unwrap_is_a_warning() {
+    let results = scan(
+        "rs",
+        "fn read(value: Result<i32, Error>) -> i32 {\n    value.unwrap()\n}\n",
+    );
+    assert!(
+        results
+            .iter()
+            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
+    );
+}
+
+#[test]
+fn rust_match_arms_follow_profile_indentation() {
+    let source =
+        "fn classify(value: i32) -> i32 {\n    match value {\n    1 => 1,\n    _ => 0,\n    }\n}\n";
+    let results = scan("rs", source);
+    assert!(!results.iter().any(|result| result["rule_id"] == "BCS008"));
+}
+
+#[test]
+fn rust_trait_imports_are_not_unused_by_identifier_count() {
+    let source = "use std::io::Write;\n\nfn write_all<W: Write>(writer: &mut W, bytes: &[u8]) {\n    writer.write_all(bytes).unwrap();\n}\n";
+    let results = scan("rs", source);
+    assert!(
+        !results
+            .iter()
+            .any(|result| result["rule_id"] == "BCS014" && result["actual"] == "Write")
+    );
+}
+
+#[test]
+fn rust_pub_use_is_a_reexport() {
+    let source = "pub use crate::foo;\n";
+    assert_empty(&scan("rs", source));
+}

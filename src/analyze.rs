@@ -79,7 +79,11 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
     } else {
         result.not_applicable.insert("BCS012".to_owned());
     }
-    if language == Language::Python || language.is_script() || language == Language::Cpp {
+    if language == Language::Python
+        || language.is_script()
+        || language == Language::Cpp
+        || language == Language::Rust
+    {
         result.executed.insert("BCS013".to_owned());
     }
     if language == Language::Python {
@@ -105,12 +109,14 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             );
         }
         match node.kind() {
-            "if_statement" => analyze_if(language, relative, source, node, &mut result.violations),
+            "if_statement" | "if_expression" | "if_let_expression" => {
+                analyze_if(language, relative, source, node, &mut result.violations)
+            }
             "for_statement" | "while_statement" | "do_statement" | "for_in_statement"
-            | "for_of_statement" => {
+            | "for_of_statement" | "loop_expression" | "while_expression" | "for_expression" => {
                 analyze_loop(language, relative, source, node, &mut result.violations);
             }
-            "switch_statement" => {
+            "switch_statement" | "match_expression" => {
                 analyze_switch(language, relative, source, node, &mut result.violations)
             }
             "goto_statement" => analyze_goto(
@@ -141,7 +147,8 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             "import_statement"
             | "import_from_statement"
             | "import_declaration"
-            | "preproc_include" => {
+            | "preproc_include"
+            | "use_declaration" => {
                 analyze_import(language, relative, source, node, &mut result);
             }
             "class_definition"
@@ -150,11 +157,18 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             | "struct_specifier"
             | "interface_declaration"
             | "enum_specifier"
-            | "enum_declaration" => {
+            | "enum_declaration"
+            | "struct_item"
+            | "enum_item"
+            | "trait_item"
+            | "type_item" => {
                 analyze_type(language, relative, source, node, &mut result.violations);
             }
             "call_expression" | "call" => {
-                analyze_hidden_input(language, relative, source, node, &mut result.violations)
+                analyze_hidden_input(language, relative, source, node, &mut result.violations);
+                if language.is_rust() {
+                    analyze_rust_result(relative, source, node, &mut result.violations);
+                }
             }
             "binary_expression" => {
                 analyze_binary_operator(relative, source, node, &mut result.violations);
@@ -639,13 +653,16 @@ fn collect_locals(language: Language, source: &str, function: Node) -> BTreeSet<
                 node.kind(),
                 "assignment" | "for_statement" | "named_expression"
             ),
+            Language::Rust => node.kind() == "let_declaration",
             _ if language.is_script() => node.kind() == "variable_declarator",
             _ => matches!(node.kind(), "init_declarator" | "declarator"),
         };
         if !collects {
             return;
         }
-        let target = if language == Language::Python {
+        let target = if language == Language::Rust {
+            node.child_by_field_name("pattern")
+        } else if language == Language::Python {
             node.child_by_field_name("left")
                 .or_else(|| node.child_by_field_name("target"))
         } else {
@@ -904,11 +921,11 @@ fn analyze_switch(
     visit(node, &mut |child| {
         if !matches!(
             child.kind(),
-            "case_statement" | "switch_case" | "default_statement"
+            "case_statement" | "switch_case" | "default_statement" | "match_arm"
         ) {
             return;
         }
-        if child.start_position().column != case_column {
+        if !language.is_rust() && child.start_position().column != case_column {
             push(
                 violations,
                 relative,
@@ -919,7 +936,10 @@ fn analyze_switch(
                 case_column,
             );
         }
-        if case_can_fallthrough(source, child) && !has_fallthrough_marker(source, child) {
+        if language != Language::Rust
+            && case_can_fallthrough(source, child)
+            && !has_fallthrough_marker(source, child)
+        {
             push(
                 violations,
                 relative,
@@ -1071,6 +1091,40 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
     }
 }
 
+fn analyze_rust_result(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
+    let text = node_text(source, node);
+    if text.contains(".unwrap()") || text.contains(".expect(") {
+        push(
+            violations,
+            relative,
+            node,
+            "BCS013",
+            "Result must be handled explicitly instead of unwrap/expect",
+            text,
+            "use ? or explicit error handling",
+        );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "warning".to_owned();
+            violation.confidence = "low".to_owned();
+        }
+    }
+    if text.contains("panic!") || text.contains("unimplemented!") || text.contains("todo!") {
+        push(
+            violations,
+            relative,
+            node,
+            "BCS013",
+            "panic-based control flow requires an explicit invariant",
+            text,
+            "documented invariant or error result",
+        );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "warning".to_owned();
+            violation.confidence = "low".to_owned();
+        }
+    }
+}
+
 fn analyze_macro(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
     let text = node_text(source, node);
     for keyword in ["return", "goto", "break", "continue"] {
@@ -1168,6 +1222,7 @@ fn analyze_import(
         if let Some(name) = binding.as_deref()
             && name != "*"
             && !reexports.contains(name)
+            && !is_likely_trait_name(name)
             && count_identifier(&masked, name) <= 1
         {
             push(
@@ -1190,6 +1245,34 @@ fn analyze_import(
     };
 
     match language {
+        Language::Rust => {
+            let is_reexport = text.trim_start().starts_with("pub use ");
+            let clause = text
+                .trim_start()
+                .trim_start_matches("pub use ")
+                .trim_start_matches("use ")
+                .trim_end_matches(';')
+                .trim();
+            let binding = clause
+                .rsplit("::")
+                .next()
+                .unwrap_or(clause)
+                .trim_matches(|character| matches!(character, '{' | '}' | ' '));
+            if binding == "*" || clause.contains("::*") {
+                record(clause.to_owned(), Some("*".to_owned()), false);
+            } else if !is_reexport {
+                for name in binding.split(',') {
+                    let binding = name
+                        .trim()
+                        .trim_matches(|character| matches!(character, '{' | '}' | ' '));
+                    let binding = binding.split(" as ").last().unwrap_or(binding).trim();
+                    if binding.is_empty() || binding == "self" || binding == "_" {
+                        continue;
+                    }
+                    record(clause.to_owned(), Some(binding.to_owned()), false);
+                }
+            }
+        }
         Language::Python => {
             if text.starts_with("from ") {
                 let mut parts = text.split_whitespace();
@@ -1305,6 +1388,38 @@ fn parse_js_bindings(clause: &str) -> Vec<(String, bool)> {
     bindings
 }
 
+fn is_likely_trait_name(name: &str) -> bool {
+    matches!(
+        name,
+        "Write"
+            | "Read"
+            | "Iterator"
+            | "Future"
+            | "Error"
+            | "Display"
+            | "Debug"
+            | "Clone"
+            | "Copy"
+            | "Send"
+            | "Sync"
+            | "Drop"
+            | "Default"
+            | "From"
+            | "Into"
+            | "TryFrom"
+            | "TryInto"
+            | "AsRef"
+            | "AsMut"
+            | "Deref"
+            | "DerefMut"
+            | "Borrow"
+            | "BorrowMut"
+            | "Fn"
+            | "FnMut"
+            | "FnOnce"
+    )
+}
+
 fn python_reexports(source: &str) -> BTreeSet<String> {
     static REEXPORT: OnceLock<Regex> = OnceLock::new();
     let regex =
@@ -1328,7 +1443,10 @@ fn analyze_type(
     node: Node,
     violations: &mut Vec<Violation>,
 ) {
-    if let Some(name) = node.child_by_field_name("name") {
+    if let Some(name) = node
+        .child_by_field_name("name")
+        .or_else(|| find_named_child_kind(node, "type_identifier"))
+    {
         let text = node_text(source, name);
         if !valid_pascal_case(text) {
             push(
@@ -1371,6 +1489,13 @@ fn analyze_variable(
     let text = node_text(source, node);
     if global {
         let mutable = match language {
+            Language::Rust => {
+                if node.kind() == "static_item" {
+                    text.contains("static mut")
+                } else {
+                    node.kind() == "let_declaration"
+                }
+            }
             Language::Python => {
                 let name = text.split('=').next().unwrap_or("").trim();
                 let value = text
@@ -1459,6 +1584,7 @@ fn analyze_variable(
     if let Some(name) = node
         .child_by_field_name("name")
         .or_else(|| node.child_by_field_name("declarator"))
+        .or_else(|| node.child_by_field_name("pattern"))
     {
         let name_text = node_text(source, name);
         if matches!(
@@ -1581,6 +1707,13 @@ fn analyze_hidden_input(
     let text = node_text(source, node);
     let hidden = match language {
         Language::Python => text.contains("os.environ") || text.contains("os.getenv"),
+        Language::Rust => {
+            text.contains("env::var")
+                || text.contains("SystemTime::now")
+                || text.contains("Instant::now")
+                || text.contains("rand::random")
+                || text.contains("thread_rng")
+        }
         _ if language.is_script() => text.contains("process.env"),
         _ => text.starts_with("getenv(") || text.contains("std::getenv"),
     };
@@ -1810,6 +1943,9 @@ fn is_function(kind: &str) -> bool {
             | "method_definition"
             | "generator_function_declaration"
             | "generator_function"
+            | "function_item"
+            | "closure_expression"
+            | "function_signature_item"
     )
 }
 
@@ -1817,19 +1953,29 @@ fn is_nesting_construct(_language: Language, kind: &str) -> bool {
     matches!(
         kind,
         "if_statement"
+            | "if_expression"
+            | "if_let_expression"
             | "for_statement"
             | "for_in_statement"
             | "for_of_statement"
+            | "for_expression"
             | "while_statement"
+            | "while_expression"
             | "do_statement"
+            | "loop_expression"
             | "switch_statement"
             | "match_statement"
+            | "match_expression"
     )
 }
 
 fn is_variable_declaration(language: Language, node: Node) -> bool {
     match language {
         Language::Python => node.kind() == "assignment",
+        Language::Rust => matches!(
+            node.kind(),
+            "let_declaration" | "const_item" | "static_item"
+        ),
         _ if language.is_script() => matches!(
             node.kind(),
             "lexical_declaration" | "variable_declaration" | "variable_declarator"
@@ -1844,7 +1990,7 @@ fn is_variable_declaration(language: Language, node: Node) -> bool {
 fn is_statement_list(kind: &str) -> bool {
     matches!(
         kind,
-        "compound_statement" | "statement_block" | "block" | "module" | "program"
+        "compound_statement" | "statement_block" | "block" | "module" | "program" | "source_file"
     )
 }
 
@@ -1876,7 +2022,14 @@ fn meaningful_statements(node: Node) -> Vec<Node> {
 }
 
 fn is_terminating(node: Node) -> bool {
-    matches!(node.kind(), "return_statement" | "throw_statement")
+    matches!(
+        node.kind(),
+        "return_statement"
+            | "throw_statement"
+            | "return_expression"
+            | "break_expression"
+            | "continue_expression"
+    )
 }
 
 fn ends_with_terminator(source: &str, node: Node) -> bool {
@@ -1935,10 +2088,13 @@ fn has_type_ancestor(node: Node) -> bool {
 }
 
 fn find_parameters(function: Node) -> Option<Node> {
-    function.child_by_field_name("parameters").or_else(|| {
-        let declarator = find_named_child_kind(function, "function_declarator")?;
-        declarator.child_by_field_name("parameters")
-    })
+    function
+        .child_by_field_name("parameters")
+        .or_else(|| {
+            let declarator = find_named_child_kind(function, "function_declarator")?;
+            declarator.child_by_field_name("parameters")
+        })
+        .or_else(|| find_named_child_kind(function, "closure_parameters"))
 }
 
 fn parameter_nodes(language: Language, parameters: Node) -> Vec<Node> {
@@ -1948,7 +2104,9 @@ fn parameter_nodes(language: Language, parameters: Node) -> Vec<Node> {
             if node.kind() == "comment" {
                 return false;
             }
-            if language == Language::Python {
+            if language == Language::Rust {
+                !matches!(node.kind(), "self_parameter" | "self")
+            } else if language == Language::Python {
                 matches!(
                     node.kind(),
                     "identifier"
@@ -2277,6 +2435,33 @@ pub fn coverage(analysis: &SyntaxAnalysis) -> Coverage {
 pub fn dependency_path(import: &ImportRecord) -> Option<String> {
     if import.type_only {
         return None;
+    }
+    if import.specifier.starts_with("crate::") {
+        return Some(format!(
+            "src/{}",
+            import
+                .specifier
+                .trim_start_matches("crate::")
+                .replace("::", "/")
+        ));
+    }
+    if import.specifier.starts_with("self::") {
+        return Some(format!(
+            "./{}",
+            import
+                .specifier
+                .trim_start_matches("self::")
+                .replace("::", "/")
+        ));
+    }
+    if import.specifier.starts_with("super::") {
+        return Some(format!(
+            "../{}",
+            import
+                .specifier
+                .trim_start_matches("super::")
+                .replace("::", "/")
+        ));
     }
     let specifier = import.specifier.trim();
     if specifier.starts_with('.') || specifier.ends_with(".h") {

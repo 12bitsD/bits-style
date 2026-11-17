@@ -38,7 +38,7 @@
 | TypeScript | `.ts`, `.mts`, `.cts` |
 | TSX | `.tsx` |
 
-Rust 目前只有规范 Profile，没有扫描适配。Go 已有独立的[语义规范](../profiles/go.md)，但同样没有扫描适配。这些文件会进入报告的 `unsupported` 列表：`report` 明确展示，`check` 返回 2，避免形成“没有覆盖却 passed”。其他语言尚未声明支持。
+Rust 为 partial 支持，已接入 Tree-sitter，支持函数、参数、命名、match、可变全局、use/依赖、未使用导入和 Result/unwrap 的保守检查。Go 目前只有规范 Profile，没有扫描适配；这些文件会进入报告的 `unsupported` 列表：`report` 明确展示，`check` 返回 2，避免形成“没有覆盖却 passed”。其他语言尚未声明支持。
 
 ## TypeScript 动态 import 兼容
 

@@ -560,6 +560,8 @@ fn resolve_dependency<'a>(
             format!("{base}.js"),
             format!("{base}.jsx"),
             format!("{base}.py"),
+            format!("{base}.rs"),
+            format!("{base}/mod.rs"),
             format!("{base}/index.ts"),
             format!("{base}/index.js"),
             format!("{base}/__init__.py"),

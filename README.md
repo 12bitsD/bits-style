@@ -8,6 +8,7 @@ Bits’s Coding Style V0.3 的公开规范与参考扫描器。规范只约束�
 - [Coding Style V0.3：BCS001–BCS015](STYLE.md)
 - [Language Profiles](docs/profiles.md)
 - [Go Profile：错误、资源、并发与抽象](profiles/go.md)
+- [Rust 扫描支持边界](docs/rust-support.md)
 - [Scanning Protocol V0.3](PROTOCOL.md)
 - [逐语言支持矩阵](docs/language-support.md)
 - [JSON Report Schema](schemas/report.schema.json)
@@ -31,7 +32,7 @@ C/C++ 保留 Tab 8 和函数换行大括号；Python/Rust 使用 4 空格；Java
 
 `bits` 是 Rust 编写的独立 CLI，使用 Tree-sitter 解析源码，不执行被扫描项目代码，扫描过程不访问网络。
 
-当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX。Rust 和 Go 目前只有规范 Profile，没有扫描适配；这些文件会进入 `unsupported` 列表，而不是形成“无文件通过”。
+当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX、Rust。Rust 为 partial 支持，Go 目前只有规范 Profile，没有扫描适配；未适配文件会进入 `unsupported` 列表，而不是形成“无文件通过”。
 
 **能解析一种语言不等于完整实现全部规则。** 函数接口、状态、错误处理和部分语义检查只支持文档列出的保守子集。逐规则状态见[支持矩阵](docs/language-support.md)。
 
@@ -128,7 +129,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-81 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+84 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 
