@@ -56,10 +56,15 @@ bits style fix src
 bits style check . --all
 bits style check . --changed
 bits style check . --staged
+bits style check --diff
+bits style check --diff --commit HEAD~3
+bits style check --diff --commit 61a5793 src
 bits style report src --format jsonl
 bits style report src --format sarif
 bits style report src --jobs 8 --include-passed
 ```
+
+`--changed` 和 `--staged` 扫描整个文件。`--diff` 只报告新增/修改行相关的违规，默认相对 `HEAD`；`--commit` 可指定 SHA、分支、tag 或 `HEAD~n`。未跟踪文件按全文件检查，纯删除且没有新增行的文件不进入扫描。
 
 ### 行级豁免
 
@@ -111,7 +116,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-34 个测试直接驱动真实 CLI，覆盖规则边界、Profile、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+36 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 

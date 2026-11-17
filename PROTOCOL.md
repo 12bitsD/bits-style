@@ -20,6 +20,8 @@ bits style report [paths...] [options]
 --all                 扫描指定根目录下全部支持的源文件
 --changed             扫描工作区和暂存区相对 HEAD 发生变化的文件
 --staged              只扫描暂存区中的文件
+--diff                只报告新增/修改行相关的违规
+--commit <commit>     指定 diff 的比较基线；必须搭配 --diff
 --format <format>     text、json、jsonl、sarif
 --output <file>       写入文件；未指定时写 stdout
 --jobs <n>            并行扫描数量，不改变输出顺序
@@ -30,6 +32,20 @@ bits style report [paths...] [options]
 ```
 
 作用域参数互斥。未指定路径和作用域时，默认 `bits style check --all .`。
+
+## 2.1 Diff-only
+
+```bash
+bits style check --diff
+bits style check --diff --commit HEAD~3
+bits style check --diff --commit 61a5793 src
+```
+
+- `--diff` 默认执行 `git diff HEAD`，包含工作区和暂存区相对基线的变化。
+- `--commit` 接受 SHA、分支、tag 或 `HEAD~n` 等 Git revision。
+- 文件仍完整解析，但只报告新增/修改行上的违规；函数级违规在函数范围与新增行相交时报告。
+- 未跟踪文件按全文件检查；纯删除且没有新增行的文件不进入扫描。
+- `--changed` 和 `--staged` 保持原有的整文件扫描行为。
 
 文件发现遵循 `.gitignore`，排除 `.git/`、依赖目录、构建产物、明确的生成代码和目录符号链接。同一文件规范化后只扫描一次。没有匹配文件属于成功扫描。
 
@@ -51,6 +67,7 @@ bits style report [paths...] [options]
   → AST 检查
   → 跨文件依赖检查
   → 行级豁免
+  → diff 新增行过滤
   → baseline 过滤
   → 汇总违规
   → 按固定顺序输出
@@ -91,7 +108,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v1",
-  "tool": { "name": "bits", "version": "0.2.0" },
+  "tool": { "name": "bits", "version": "0.2.1" },
   "style": { "name": "Bits’s Coding Style", "version": "0.2" },
   "status": "violation",
   "coverage": {

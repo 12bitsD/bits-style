@@ -6,7 +6,7 @@ use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 
 use crate::analyze::{self, ImportRecord, SyntaxAnalysis};
-use crate::discovery::{self, DiscoveredFile, Scope};
+use crate::discovery::{self, DiscoveredFile, LineScope, Scope};
 use crate::model::{FileFix, PassedCheck, RULE_IDS, Report, ScanError, Violation};
 use crate::{report, text};
 
@@ -54,12 +54,16 @@ pub enum OutputFormat {
 struct ScanArgs {
     #[arg(value_name = "PATH")]
     paths: Vec<PathBuf>,
-    #[arg(long, conflicts_with_all = ["changed", "staged"])]
+    #[arg(long, conflicts_with_all = ["changed", "staged", "diff"])]
     all: bool,
-    #[arg(long, conflicts_with_all = ["all", "staged"])]
+    #[arg(long, conflicts_with_all = ["all", "staged", "diff"])]
     changed: bool,
-    #[arg(long, conflicts_with_all = ["all", "changed"])]
+    #[arg(long, conflicts_with_all = ["all", "changed", "diff"])]
     staged: bool,
+    #[arg(long, conflicts_with_all = ["all", "changed", "staged"])]
+    diff: bool,
+    #[arg(long, requires = "diff", value_name = "COMMIT")]
+    commit: Option<String>,
     #[arg(long, value_enum)]
     format: Option<OutputFormat>,
     #[arg(long)]
@@ -96,6 +100,7 @@ struct FileScan {
     executed: BTreeSet<String>,
     partial: BTreeSet<String>,
     not_applicable: BTreeSet<String>,
+    line_scope: LineScope,
 }
 
 pub fn run(cli: Cli) -> u8 {
@@ -120,7 +125,9 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
         return Err("--jobs must be greater than zero".to_owned());
     }
     let config = load_config(args.config.as_deref())?;
-    let scope = if args.changed {
+    let scope = if args.diff {
+        Scope::Diff(args.commit.clone().unwrap_or_else(|| "HEAD".to_owned()))
+    } else if args.changed {
         Scope::Changed
     } else if args.staged {
         Scope::Staged
@@ -265,6 +272,7 @@ fn scan_report(files: &[DiscoveredFile], jobs: usize, include_passed: bool) -> R
             .extend(["BCS001", "BCS002", "BCS015"].map(str::to_owned));
     }
     check_dependency_cycles(&scans, &mut report.results);
+    filter_diff_violations(&scans, &mut report.results);
     report.finish();
 
     if include_passed {
@@ -313,6 +321,7 @@ fn scan_files(files: &[DiscoveredFile], jobs: usize) -> Vec<FileScan> {
 fn scan_file(file: &DiscoveredFile) -> FileScan {
     let mut scan = FileScan {
         relative: file.relative.clone(),
+        line_scope: file.line_scope.clone(),
         ..FileScan::default()
     };
     let source = match std::fs::read_to_string(&file.absolute) {
@@ -389,6 +398,20 @@ fn apply_fixes(files: &[DiscoveredFile]) -> Result<Vec<FileFix>, String> {
         });
     }
     Ok(records)
+}
+
+fn filter_diff_violations(scans: &[FileScan], violations: &mut Vec<Violation>) {
+    let scopes: BTreeMap<&str, &LineScope> = scans
+        .iter()
+        .map(|scan| (scan.relative.as_str(), &scan.line_scope))
+        .collect();
+    violations.retain(|violation| match scopes.get(violation.file.as_str()) {
+        Some(LineScope::Added(lines)) => lines
+            .range(violation.range.start.line..=violation.range.end.line)
+            .next()
+            .is_some(),
+        _ => true,
+    });
 }
 
 fn check_dependency_cycles(scans: &[FileScan], violations: &mut Vec<Violation>) {

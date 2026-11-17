@@ -460,3 +460,140 @@ fn baseline_suppresses_only_exact_existing_violations() {
             .any(|result| { result["file"] == "new.py" && result["rule_id"] == "BCS011" })
     );
 }
+
+#[test]
+fn diff_only_reports_added_lines_and_honors_commit() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("sample.py");
+    fs::write(&file, "global_counter = 0\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "sample.py"]);
+    run_git(root, &["commit", "-qm", "initial"]);
+    let initial = git_output(root, &["rev-parse", "HEAD"]);
+
+    let clean = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        clean.status.code(),
+        Some(0),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&clean.stdout),
+        String::from_utf8_lossy(&clean.stderr)
+    );
+    assert_eq!(json(&clean)["summary"]["files_scanned"], 0);
+
+    fs::write(&file, "global_counter = 0\nanother_counter = 1\n").unwrap();
+    run_git(root, &["add", "sample.py"]);
+    run_git(root, &["commit", "-qm", "second"]);
+    fs::write(
+        &file,
+        "global_counter = 0\nanother_counter = 1\nthird_counter = 2\n",
+    )
+    .unwrap();
+
+    let head = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    let results = json(&head);
+    assert_eq!(results["results"].as_array().unwrap().len(), 1);
+    assert_eq!(results["results"][0]["actual"], "third_counter = 2");
+
+    let old = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--commit",
+        &initial,
+        "--format",
+        "json",
+    ]);
+    let results = json(&old);
+    let actual: Vec<&str> = results["results"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|result| result["actual"].as_str().unwrap())
+        .collect();
+    assert!(actual.contains(&"another_counter = 1"));
+    assert!(actual.contains(&"third_counter = 2"));
+    assert!(!actual.contains(&"global_counter = 0"));
+
+    fs::write(root.join("new.py"), "new_counter = 3\n").unwrap();
+    let untracked = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert!(
+        json(&untracked)["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|result| { result["file"] == "new.py" && result["actual"] == "new_counter = 3" })
+    );
+}
+
+#[test]
+fn diff_checks_functions_whose_bodies_contain_added_lines() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("sample.py");
+    let source = format!("def sized():\n{}", "    value = 1\n".repeat(47));
+    fs::write(&file, source).unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "sample.py"]);
+    run_git(root, &["commit", "-qm", "initial"]);
+
+    let mut source = fs::read_to_string(&file).unwrap();
+    source.push_str("    value = 2\n");
+    fs::write(&file, source).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(
+        output.status.code(),
+        Some(1),
+        "stdout={} stderr={}",
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let results = json(&output);
+    assert!(results["results"].as_array().unwrap().iter().any(|result| {
+        result["rule_id"] == "BCS003" && result["message"] == "function exceeds 48 code lines"
+    }));
+}
+
+fn git_output(root: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args(args)
+        .output()
+        .unwrap();
+    assert!(output.status.success());
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}

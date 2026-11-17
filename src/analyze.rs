@@ -258,7 +258,7 @@ fn analyze_function(
 
     let lines = code_line_count(source, node, comments, strings);
     if lines > 48 {
-        push_actual(
+        push_function(
             violations,
             relative,
             node,
@@ -271,7 +271,7 @@ fn analyze_function(
 
     let nesting = max_nesting(node, 0);
     if nesting > 3 {
-        push_actual(
+        push_function(
             violations,
             relative,
             node,
@@ -284,7 +284,7 @@ fn analyze_function(
 
     let complexity = cyclomatic_complexity(node);
     if complexity > 10 {
-        push_actual(
+        push_function(
             violations,
             relative,
             node,
@@ -297,7 +297,7 @@ fn analyze_function(
 
     let locals = collect_locals(language, source, node);
     if locals.len() > 10 {
-        push_actual(
+        push_function(
             violations,
             relative,
             node,
@@ -1748,6 +1748,38 @@ fn contains_word(text: &str, word: &str) -> bool {
 
 fn node_text<'a>(source: &'a str, node: Node) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
+}
+
+fn push_function(
+    violations: &mut Vec<Violation>,
+    relative: &str,
+    node: Node,
+    rule: &str,
+    message: &str,
+    actual: impl Into<serde_json::Value>,
+    expected: impl Into<serde_json::Value>,
+) {
+    let mut violation = Violation::new(
+        rule,
+        relative,
+        node.start_position().row + 1,
+        node.start_position().column + 1,
+        message,
+        actual,
+        expected,
+        false,
+    );
+    violation.range = crate::model::Range {
+        start: crate::model::Position::new(
+            node.start_position().row + 1,
+            node.start_position().column + 1,
+        ),
+        end: crate::model::Position::new(
+            node.end_position().row + 1,
+            node.end_position().column + 1,
+        ),
+    };
+    violations.push(violation);
 }
 
 fn push(
