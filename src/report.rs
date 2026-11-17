@@ -53,10 +53,11 @@ fn text(report: &Report, include_passed: bool) -> String {
         }
     }
     output.push_str(&format!(
-        "Scanned: {} files\nViolations: {}\nFixable: {}\nScan errors: {}\nResult: {}\n",
+        "Scanned: {} files\nViolations: {}\nFixable: {}\nSuppressed: {}\nScan errors: {}\nResult: {}\n",
         report.summary.files_scanned,
         report.summary.violations,
         report.summary.fixable_violations,
+        report.summary.suppressed_violations,
         report.summary.scan_errors,
         if report.status == "passed" {
             "PASS"
@@ -119,6 +120,7 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
             "scan_errors": report.summary.scan_errors,
             "files_fixed": report.summary.files_fixed,
             "violations_fixed": report.summary.violations_fixed,
+            "suppressed_violations": report.summary.suppressed_violations,
         }))
         .map_err(|error| error.to_string())?,
     );

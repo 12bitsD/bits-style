@@ -72,12 +72,19 @@ struct ScanArgs {
     no_ignore: bool,
     #[arg(long)]
     include_passed: bool,
+    #[arg(long)]
+    baseline: Option<PathBuf>,
 }
 
 #[derive(Debug, Default, Deserialize)]
 struct Config {
     #[serde(default)]
     exclude: Vec<String>,
+}
+
+#[derive(Debug, Deserialize)]
+struct Baseline {
+    results: Vec<Violation>,
 }
 
 #[derive(Debug, Default)]
@@ -151,6 +158,10 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
     } else {
         scan_report(&files, args.jobs, args.include_passed)
     };
+    if let Some(path) = &args.baseline {
+        let baseline = load_baseline(path)?;
+        apply_baseline(&mut report, &baseline);
+    }
     report.finish();
 
     let format = args.format.unwrap_or(if is_report {
@@ -183,6 +194,45 @@ fn load_config(path: Option<&Path>) -> Result<Config, String> {
     let source =
         std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
     toml::from_str(&source).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn load_baseline(path: &Path) -> Result<Baseline, String> {
+    let source =
+        std::fs::read_to_string(path).map_err(|error| format!("{}: {error}", path.display()))?;
+    serde_json::from_str(&source).map_err(|error| format!("{}: {error}", path.display()))
+}
+
+fn apply_baseline(report: &mut Report, baseline: &Baseline) {
+    let files: BTreeSet<&str> = baseline
+        .results
+        .iter()
+        .map(|result| result.file.as_str())
+        .collect();
+    let fingerprints: BTreeSet<(String, String, String, String)> = baseline
+        .results
+        .iter()
+        .map(|result| {
+            (
+                result.rule_id.clone(),
+                result.file.clone(),
+                result.message.clone(),
+                result.actual.to_string(),
+            )
+        })
+        .collect();
+    let before = report.results.len();
+    report.results.retain(|result| {
+        if !files.contains(result.file.as_str()) {
+            return true;
+        }
+        !fingerprints.contains(&(
+            result.rule_id.clone(),
+            result.file.clone(),
+            result.message.clone(),
+            result.actual.to_string(),
+        ))
+    });
+    report.summary.suppressed_violations = before - report.results.len();
 }
 
 fn scan_report(files: &[DiscoveredFile], jobs: usize, include_passed: bool) -> Report {
@@ -297,12 +347,15 @@ fn scan_file(file: &DiscoveredFile) -> FileScan {
     }
     let analysis = analyze::analyze(file.language, &file.relative, &source, &tree);
     scan.violations.extend(text::scan(
+        file.language,
         &file.relative,
         &source,
         &analysis.strings,
         &analysis.comments,
     ));
+    let comments = analysis.comments.clone();
     merge_analysis(&mut scan, analysis);
+    text::apply_inline_suppressions(&file.relative, &source, &comments, &mut scan.violations);
     scan
 }
 

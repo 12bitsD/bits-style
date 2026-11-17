@@ -1,6 +1,5 @@
-import { b_value } from "./b";
+import { bValue } from "./b";
 
-export function a_value()
-{
-	return b_value();
+export function aValue() {
+  return bValue();
 }

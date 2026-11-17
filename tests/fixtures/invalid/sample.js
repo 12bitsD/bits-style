@@ -1,11 +1,11 @@
 import unused from "./other.js";
 
-let globalCounter = 0;
+let global_counter = 0;
 
-export function computeResult(first, second, third, fourth, fifth) {
-    if(fifth) {
-        return first;
-    } else {
-        return second + third + fourth;
-    }
+export function compute_result(first, second, third, fourth, fifth) {
+	if(fifth) {
+		return first;
+	} else {
+		return second + third + fourth;
+	}
 }

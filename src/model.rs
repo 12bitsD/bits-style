@@ -4,7 +4,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: &str = "bits.style.scan/v1";
-pub const STYLE_VERSION: &str = "0.1";
+pub const STYLE_VERSION: &str = "0.2";
 pub const RULE_IDS: [&str; 15] = [
     "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007", "BCS008", "BCS009",
     "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015",
@@ -96,6 +96,7 @@ pub struct Summary {
     pub scan_errors: usize,
     pub files_fixed: usize,
     pub violations_fixed: usize,
+    pub suppressed_violations: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

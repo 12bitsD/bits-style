@@ -1,9 +1,14 @@
+use std::collections::BTreeSet;
 use std::ops::Range;
+use std::sync::OnceLock;
+
+use regex::Regex;
 
 use crate::language::Language;
 use crate::model::{AppliedFix, Violation};
 
 pub fn scan(
+    language: Language,
     relative: &str,
     source: &str,
     strings: &[Range<usize>],
@@ -21,15 +26,25 @@ pub fn scan(
             + 1;
         let leading_len = content.len() - content.trim_start_matches([' ', '\t']).len();
         let leading = &content[..leading_len];
-        if leading.contains(' ') && !inside_any(strings, offset) {
+        let mixed = leading.contains(' ') && leading.contains('\t');
+        let wrong_profile = match language {
+            Language::C | Language::Cpp => leading.contains(' '),
+            _ => leading.contains('\t'),
+        };
+        if (mixed || wrong_profile) && !inside_any(strings, offset) {
+            let expected = match language {
+                Language::C | Language::Cpp => "tabs,width=8",
+                Language::Python => "spaces,width=4",
+                _ => "spaces,width=2",
+            };
             violations.push(Violation::new(
                 "BCS001",
                 relative,
                 line_number,
                 1,
-                "indentation must use tabs only",
+                "indentation does not match the language profile",
                 leading.replace('\t', "\\t"),
-                "tabs,width=8",
+                expected,
                 true,
             ));
         }
@@ -149,21 +164,24 @@ pub fn fix(
         } else {
             let leading_len = content.len() - content.trim_start_matches([' ', '\t']).len();
             let leading = &content[..leading_len];
-            if leading.contains(' ') {
-                let columns = leading.chars().fold(0_usize, |column, character| {
-                    if character == '\t' {
-                        column + (8 - column % 8)
-                    } else {
-                        column + 1
-                    }
-                });
-                let space_width = if language == Language::Python { 4 } else { 8 };
-                let tabs = columns.div_ceil(space_width);
-                output.push_str(&"\t".repeat(tabs));
+            let normalized = match language {
+                Language::C | Language::Cpp => {
+                    let columns = leading.chars().fold(0_usize, |column, character| {
+                        if character == '\t' {
+                            column + (8 - column % 8)
+                        } else {
+                            column + 1
+                        }
+                    });
+                    "\t".repeat(columns.div_ceil(8))
+                }
+                Language::Python => leading.replace('\t', "    "),
+                _ => leading.replace('\t', "  "),
+            };
+            if normalized != leading {
                 indentation_fixes += 1;
-            } else {
-                output.push_str(leading);
             }
+            output.push_str(&normalized);
             let rest = &content[leading_len..];
             let trimmed = rest.trim_end_matches([' ', '\t']);
             trailing_fixes += usize::from(trimmed.len() != rest.len());
@@ -250,4 +268,44 @@ fn looks_like_commented_code(text: &str) -> bool {
         && code_tokens.iter().any(|token| body.contains(token))
         && !body.contains("TODO")
         && body.len() < 240
+}
+
+pub fn apply_inline_suppressions(
+    relative: &str,
+    source: &str,
+    comments: &[Range<usize>],
+    violations: &mut Vec<Violation>,
+) {
+    static SUPPRESSION: OnceLock<Regex> = OnceLock::new();
+    let suppression = SUPPRESSION
+        .get_or_init(|| Regex::new(r"bits:allow\((BCS0(?:0[1-9]|1[0-5]))\):\s*(\S.*)").unwrap());
+    let mut allowed = BTreeSet::new();
+    for comment in comments {
+        let Some(text) = source.get(comment.clone()) else {
+            continue;
+        };
+        if !text.contains("bits:allow") {
+            continue;
+        }
+        let (line, _) = point_at(source, comment.start);
+        if let Some(captures) = suppression.captures(text) {
+            let rule = captures[1].to_owned();
+            allowed.insert((rule.clone(), line));
+            allowed.insert((rule, line + 1));
+        } else {
+            violations.push(Violation::new(
+                "BCS015",
+                relative,
+                line,
+                1,
+                "suppression must include a rule id and reason",
+                text.lines().next().unwrap_or(""),
+                "bits:allow(BCSxxx): reason",
+                false,
+            ));
+        }
+    }
+    violations.retain(|violation| {
+        !allowed.contains(&(violation.rule_id.clone(), violation.range.start.line))
+    });
 }

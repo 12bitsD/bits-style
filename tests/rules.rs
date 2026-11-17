@@ -53,7 +53,7 @@ fn bcs003_checks_function_lines_nesting_locals_and_complexity() {
     let long_function = format!("def long_function():\n{}", "\tvalue = 1\n".repeat(49));
     let results = scan("py", &long_function);
     assert!(results.iter().any(|result| result["rule_id"] == "BCS003"
-        && result["message"] == "function exceeds 48 physical lines"));
+        && result["message"] == "function exceeds 48 code lines"));
 
     let nested = "def nested(value):\n\tif value:\n\t\tfor item in value:\n\t\t\twhile item:\n\t\t\t\tif item:\n\t\t\t\t\treturn 1\n\treturn 0\n";
     let results = scan("py", nested);
@@ -110,11 +110,11 @@ fn bcs006_rejects_multiple_statements_on_one_line() {
 }
 
 #[test]
-fn bcs007_distinguishes_single_and_consistent_branches() {
-    let single = "function choose(value)\n{\n\tif (value) {\n\t\treturn 1;\n\t}\n\treturn 0;\n}\n";
-    assert_rule(&scan("js", single), "BCS007");
+fn bcs007_requires_braces_and_profile_placement() {
+    let unbraced = "function choose(value) {\n  if (value)\n    return 1;\n  return 0;\n}\n";
+    assert_rule(&scan("js", unbraced), "BCS007");
 
-    let consistent = "function choose(value)\n{\n\tif (value) {\n\t\treturn 1;\n\t} else {\n\t\treturn 0;\n\t}\n}\n";
+    let consistent = "function choose(value) {\n  if (value) {\n    return 1;\n  } else {\n    return 0;\n  }\n}\n";
     assert!(
         !scan("js", consistent)
             .iter()
@@ -170,4 +170,50 @@ fn bcs014_rejects_wildcard_imports_and_unreachable_code() {
 fn bcs015_rejects_editor_modelines() {
     let source = "# vim:set sw=4 noet\ndef valid():\n\treturn 1\n";
     assert_rule(&scan("py", source), "BCS015");
+}
+
+#[test]
+fn bcs003_ignores_comments_and_flat_switch_cases() {
+    let comments = format!(
+        "def documented():\n{}\treturn 1\n",
+        "\t# explanation\n".repeat(49)
+    );
+    assert!(
+        !scan("py", &comments)
+            .iter()
+            .any(|result| result["rule_id"] == "BCS003")
+    );
+
+    let cases = (1..=12)
+        .map(|value| format!("\tcase {value}:\n\t\treturn {value};\n"))
+        .collect::<String>();
+    let source = format!(
+        "int classify(int value)\n{{\n\tswitch (value) {{\n{cases}\tdefault:\n\t\treturn 0;\n\t}}\n}}\n"
+    );
+    assert!(
+        !scan("c", &source)
+            .iter()
+            .any(|result| result["rule_id"] == "BCS003")
+    );
+}
+
+#[test]
+fn bcs006_rejects_nested_ternary_and_double_negation() {
+    let nested = "function choose(first, second, third, fourth) {\n  return first ? second : third ? fourth : 0;\n}\n";
+    assert_rule(&scan("js", nested), "BCS006");
+
+    let negation = "function choose(value) {\n  return !!value;\n}\n";
+    assert_rule(&scan("js", negation), "BCS006");
+}
+
+#[test]
+fn bcs011_rejects_parameter_reassignment() {
+    let source = "def update(value):\n    value = 1\n    return value\n";
+    assert_rule(&scan("py", source), "BCS011");
+}
+
+#[test]
+fn bcs013_rejects_unrestricted_catch_all() {
+    let source = "def parse(value):\n    try:\n        return int(value)\n    except Exception:\n        return 0\n";
+    assert_rule(&scan("py", source), "BCS013");
 }

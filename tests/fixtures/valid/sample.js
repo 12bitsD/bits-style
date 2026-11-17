@@ -1,4 +1,3 @@
-export function add_numbers(left, right)
-{
-	return left + right;
+export function addNumbers(left, right) {
+  return left + right;
 }

@@ -75,16 +75,33 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
 
     visit(root, &mut |node| {
         if is_function(node.kind()) {
-            analyze_function(language, relative, source, node, &mut result.violations);
+            analyze_function(
+                language,
+                relative,
+                source,
+                node,
+                &result.comments,
+                &result.strings,
+                &mut result.violations,
+            );
         }
         match node.kind() {
             "if_statement" => analyze_if(language, relative, source, node, &mut result.violations),
             "for_statement" | "while_statement" | "do_statement" | "for_in_statement"
             | "for_of_statement" => {
-                analyze_loop(relative, source, node, &mut result.violations);
+                analyze_loop(language, relative, source, node, &mut result.violations);
             }
-            "switch_statement" => analyze_switch(relative, source, node, &mut result.violations),
-            "goto_statement" => analyze_goto(root, relative, source, node, &mut result.violations),
+            "switch_statement" => {
+                analyze_switch(language, relative, source, node, &mut result.violations)
+            }
+            "goto_statement" => analyze_goto(
+                language,
+                root,
+                relative,
+                source,
+                node,
+                &mut result.violations,
+            ),
             "catch_clause" | "except_clause" => {
                 analyze_catch(relative, source, node, &mut result.violations)
             }
@@ -161,6 +178,38 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
                     "explicit_statements",
                 );
             }
+            "conditional_expression" | "ternary_expression"
+                if node.parent().is_some_and(|parent| {
+                    matches!(
+                        parent.kind(),
+                        "conditional_expression" | "ternary_expression"
+                    )
+                }) =>
+            {
+                push(
+                    &mut result.violations,
+                    relative,
+                    node,
+                    "BCS006",
+                    "nested ternary expressions are forbidden",
+                    "nested_ternary",
+                    "explicit_branches",
+                );
+            }
+            "unary_expression" | "unary_operator"
+                if node_text(source, node).trim_start().starts_with("!!")
+                    || node_text(source, node).trim_start().starts_with("not not ") =>
+            {
+                push(
+                    &mut result.violations,
+                    relative,
+                    node,
+                    "BCS006",
+                    "double-negation conditions are forbidden",
+                    "double_negation",
+                    "positive_condition",
+                );
+            }
             _ => {}
         }
         if is_variable_declaration(language, node) {
@@ -197,22 +246,24 @@ fn analyze_function(
     relative: &str,
     source: &str,
     node: Node,
+    comments: &[Range<usize>],
+    strings: &[Range<usize>],
     violations: &mut Vec<Violation>,
 ) {
     if language != Language::Python
         && let Some(body) = node.child_by_field_name("body")
     {
-        analyze_opening_brace(relative, source, node, body, true, violations);
+        analyze_opening_brace(language, relative, source, node, body, true, violations);
     }
 
-    let lines = node.end_position().row - node.start_position().row + 1;
+    let lines = code_line_count(source, node, comments, strings);
     if lines > 48 {
         push_actual(
             violations,
             relative,
             node,
             "BCS003",
-            "function exceeds 48 physical lines",
+            "function exceeds 48 code lines",
             lines,
             "<=48",
         );
@@ -270,6 +321,10 @@ fn analyze_function(
                 "<=4",
             );
         }
+        let parameter_names = params
+            .iter()
+            .filter_map(|parameter| parameter_name(source, *parameter))
+            .collect::<BTreeSet<_>>();
         for parameter in params {
             let text = node_text(source, parameter);
             if is_boolean_parameter(language, text) {
@@ -295,22 +350,142 @@ fn analyze_function(
                 );
             }
         }
+        analyze_parameter_mutability(
+            language,
+            relative,
+            source,
+            node,
+            &parameter_names,
+            violations,
+        );
     }
 
     if let Some(name_node) = function_name(node) {
         let name = node_text(source, name_node);
-        if !is_constructor_name(node, source, name) && !valid_lower_snake(name) {
+        if !is_constructor_name(node, source, name) && !valid_function_name(language, name) {
+            let expected = if language.is_script() {
+                "lowerCamelCase"
+            } else {
+                "lower_snake_case"
+            };
             push(
                 violations,
                 relative,
                 name_node,
                 "BCS010",
-                "function names must use lower_snake_case",
+                "function name does not match the language profile",
                 name,
-                "lower_snake_case",
+                expected,
             );
         }
     }
+}
+
+fn code_line_count(
+    source: &str,
+    function: Node,
+    comments: &[Range<usize>],
+    strings: &[Range<usize>],
+) -> usize {
+    let mut lines = 0;
+    let bytes = source.as_bytes();
+    let mut line_start = function.start_byte();
+    for row in function.start_position().row..=function.end_position().row {
+        let line_end = if row == function.end_position().row {
+            function.end_byte()
+        } else {
+            source[line_start..]
+                .find('\n')
+                .map_or(function.end_byte(), |index| line_start + index + 1)
+        };
+        let has_code = bytes[line_start..line_end]
+            .iter()
+            .enumerate()
+            .any(|(index, byte)| {
+                let offset = line_start + index;
+                !byte.is_ascii_whitespace()
+                    && !comments
+                        .iter()
+                        .chain(strings)
+                        .any(|range| range.start <= offset && offset < range.end)
+            });
+        lines += usize::from(has_code);
+        line_start = line_end;
+    }
+    lines
+}
+
+fn parameter_name(source: &str, parameter: Node) -> Option<String> {
+    if parameter.kind() == "identifier" {
+        return Some(node_text(source, parameter).to_owned());
+    }
+    parameter
+        .child_by_field_name("name")
+        .or_else(|| parameter.child_by_field_name("declarator"))
+        .and_then(|node| {
+            if node.kind() == "identifier" {
+                Some(node)
+            } else {
+                find_named_child_kind(node, "identifier")
+            }
+        })
+        .or_else(|| find_named_child_kind(parameter, "identifier"))
+        .map(|node| node_text(source, node).to_owned())
+}
+
+fn analyze_parameter_mutability(
+    language: Language,
+    relative: &str,
+    source: &str,
+    function: Node,
+    parameters: &BTreeSet<String>,
+    violations: &mut Vec<Violation>,
+) {
+    if parameters.is_empty() {
+        return;
+    }
+    visit(function, &mut |node| {
+        if matches!(
+            node.kind(),
+            "assignment" | "assignment_expression" | "augmented_assignment"
+        ) && let Some(target) = node
+            .child_by_field_name("left")
+            .or_else(|| node.child_by_field_name("target"))
+            && let Some(name) = find_named_child_kind(target, "identifier")
+        {
+            let name = node_text(source, name);
+            if parameters.contains(name) {
+                push(
+                    violations,
+                    relative,
+                    target,
+                    "BCS011",
+                    "function parameters must not be reassigned",
+                    name,
+                    "local_variable",
+                );
+            }
+        }
+        let declaration = match language {
+            Language::C | Language::Cpp => matches!(node.kind(), "init_declarator" | "declaration"),
+            Language::Python => false,
+            _ => node.kind() == "variable_declarator",
+        };
+        if declaration
+            && let Some(name) = parameter_name(source, node)
+            && parameters.contains(&name)
+        {
+            push(
+                violations,
+                relative,
+                node,
+                "BCS011",
+                "local variables must not shadow parameters",
+                name,
+                "distinct_name",
+            );
+        }
+    });
 }
 
 fn max_nesting(function: Node, depth: usize) -> usize {
@@ -347,8 +522,6 @@ fn cyclomatic_complexity(function: Node) -> usize {
                 | "for_of_statement"
                 | "while_statement"
                 | "do_statement"
-                | "case_statement"
-                | "switch_case"
                 | "catch_clause"
                 | "except_clause"
                 | "conditional_expression"
@@ -464,9 +637,18 @@ fn analyze_if(
     if language != Language::Python
         && let Some(then) = consequence
     {
-        let then_block = is_block(then);
-        if then_block {
-            analyze_opening_brace(relative, source, node, then, false, violations);
+        if is_block(then) {
+            analyze_opening_brace(language, relative, source, node, then, false, violations);
+        } else {
+            push(
+                violations,
+                relative,
+                then,
+                "BCS007",
+                "control-flow branches must use braces",
+                "unbraced_branch",
+                "braced_branch",
+            );
         }
         if let Some(otherwise) = alternative {
             let else_body = if otherwise.kind() == "else_clause" {
@@ -477,32 +659,21 @@ fn analyze_if(
             } else {
                 otherwise
             };
-            let else_if = else_body.kind() == "if_statement";
-            let else_block = is_block(else_body);
-            if !else_if && then_block != else_block {
+            if is_block(else_body) {
+                analyze_opening_brace(
+                    language, relative, source, otherwise, else_body, false, violations,
+                );
+            } else if else_body.kind() != "if_statement" {
                 push(
                     violations,
                     relative,
-                    node,
+                    else_body,
                     "BCS007",
-                    "all if/else branches must consistently use braces",
-                    "mixed_branches",
-                    "consistent_braces",
+                    "control-flow branches must use braces",
+                    "unbraced_branch",
+                    "braced_branch",
                 );
             }
-            if else_block {
-                analyze_opening_brace(relative, source, otherwise, else_body, false, violations);
-            }
-        } else if then_block && statement_count(then) == 1 {
-            push(
-                violations,
-                relative,
-                then,
-                "BCS007",
-                "single-statement branches must omit braces",
-                "braced_single_statement",
-                "unbraced_statement",
-            );
         }
     }
 
@@ -521,17 +692,23 @@ fn analyze_if(
     }
 }
 
-fn analyze_loop(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
+fn analyze_loop(
+    language: Language,
+    relative: &str,
+    source: &str,
+    node: Node,
+    violations: &mut Vec<Violation>,
+) {
     if let Some(body) = node.child_by_field_name("body") {
         if is_block(body) {
-            analyze_opening_brace(relative, source, node, body, false, violations);
-        } else if statement_count(node) > 1 {
+            analyze_opening_brace(language, relative, source, node, body, false, violations);
+        } else {
             push(
                 violations,
                 relative,
                 body,
                 "BCS007",
-                "multi-statement loops must use braces",
+                "control-flow loops must use braces",
                 "unbraced_loop",
                 "braced_loop",
             );
@@ -553,6 +730,7 @@ fn analyze_loop(relative: &str, source: &str, node: Node, violations: &mut Vec<V
 }
 
 fn analyze_opening_brace(
+    language: Language,
     relative: &str,
     source: &str,
     parent: Node,
@@ -564,7 +742,8 @@ fn analyze_opening_brace(
         return;
     };
     let same_line = brace.row == parent.start_position().row;
-    if function && same_line {
+    let next_line_required = function && language.is_c_like();
+    if next_line_required && same_line {
         push(
             violations,
             relative,
@@ -574,21 +753,32 @@ fn analyze_opening_brace(
             "same_line",
             "next_line",
         );
-    } else if !function && !same_line {
+    } else if !next_line_required && !same_line {
         push(
             violations,
             relative,
             body,
             "BCS007",
-            "block opening brace must share the statement line",
+            "opening brace must share the statement line",
             "next_line",
             "same_line",
         );
     }
 }
 
-fn analyze_switch(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
+fn analyze_switch(
+    language: Language,
+    relative: &str,
+    source: &str,
+    node: Node,
+    violations: &mut Vec<Violation>,
+) {
     let switch_column = node.start_position().column;
+    let case_column = if language.is_script() {
+        switch_column + 2
+    } else {
+        switch_column
+    };
     visit(node, &mut |child| {
         if !matches!(
             child.kind(),
@@ -596,15 +786,15 @@ fn analyze_switch(relative: &str, source: &str, node: Node, violations: &mut Vec
         ) {
             return;
         }
-        if child.start_position().column != switch_column {
+        if child.start_position().column != case_column {
             push(
                 violations,
                 relative,
                 child,
                 "BCS008",
-                "case/default must align with switch",
+                "case/default indentation does not match the language profile",
                 child.start_position().column,
-                switch_column,
+                case_column,
             );
         }
         if case_can_fallthrough(source, child) && !has_fallthrough_marker(source, child) {
@@ -622,12 +812,25 @@ fn analyze_switch(relative: &str, source: &str, node: Node, violations: &mut Vec
 }
 
 fn analyze_goto(
+    language: Language,
     root: Node,
     relative: &str,
     source: &str,
     node: Node,
     violations: &mut Vec<Violation>,
 ) {
+    if language == Language::Cpp {
+        push(
+            violations,
+            relative,
+            node,
+            "BCS005",
+            "goto is forbidden in RAII-based languages",
+            "goto",
+            "raii_cleanup",
+        );
+        return;
+    }
     let label = node_text(source, node)
         .trim()
         .trim_start_matches("goto")
@@ -692,6 +895,24 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
             "handle_or_rethrow",
         );
         return;
+    }
+    let catch_text = node_text(source, node).trim();
+    let catch_all = catch_text.starts_with("except:")
+        || catch_text.starts_with("except Exception")
+        || catch_text.contains("catch (...)");
+    let rethrow_only = statements
+        .iter()
+        .all(|statement| matches!(node_text(source, *statement).trim(), "raise" | "throw;"));
+    if catch_all && !rethrow_only {
+        push(
+            violations,
+            relative,
+            node,
+            "BCS013",
+            "catch-all handlers must rethrow or translate at a system boundary",
+            "unrestricted_catch_all",
+            "rethrow_or_translate",
+        );
     }
     for statement in statements {
         let text = node_text(source, statement).trim();
@@ -941,7 +1162,10 @@ fn analyze_variable(
     let text = node_text(source, node);
     if global {
         let mutable = match language {
-            Language::Python => node.kind() == "assignment" && !text.trim_start().starts_with('_'),
+            Language::Python => {
+                let name = text.split('=').next().unwrap_or("").trim();
+                node.kind() == "assignment" && !name.starts_with('_') && !valid_upper_snake(name)
+            }
             _ if language.is_script() => {
                 matches!(node.kind(), "lexical_declaration" | "variable_declaration")
                     && (text.trim_start().starts_with("let ")
@@ -992,15 +1216,20 @@ fn analyze_variable(
                         "UPPER_SNAKE_CASE",
                     );
                 }
-            } else if !valid_lower_snake(name_text) {
+            } else if !valid_function_name(language, name_text) {
+                let expected = if language.is_script() {
+                    "lowerCamelCase"
+                } else {
+                    "lower_snake_case"
+                };
                 push(
                     violations,
                     relative,
                     name,
                     "BCS010",
-                    "variable names must use lower_snake_case",
+                    "variable name does not match the language profile",
                     name_text,
-                    "lower_snake_case",
+                    expected,
                 );
             }
         }
@@ -1264,13 +1493,6 @@ fn meaningful_statements(node: Node) -> Vec<Node> {
         .collect()
 }
 
-fn statement_count(node: Node) -> usize {
-    meaningful_statements(node)
-        .into_iter()
-        .filter(|child| is_statement(child.kind()))
-        .count()
-}
-
 fn is_terminating(node: Node) -> bool {
     matches!(node.kind(), "return_statement" | "throw_statement")
 }
@@ -1472,6 +1694,21 @@ fn first_token(source: &str, node: Node, token: char) -> Option<tree_sitter::Poi
         };
         tree_sitter::Point { row, column }
     })
+}
+
+fn valid_function_name(language: Language, name: &str) -> bool {
+    if language.is_script() {
+        valid_lower_camel(name)
+    } else {
+        valid_lower_snake(name)
+    }
+}
+
+fn valid_lower_camel(name: &str) -> bool {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    REGEX
+        .get_or_init(|| Regex::new(r"^[a-z][A-Za-z0-9]*$").unwrap())
+        .is_match(name)
 }
 
 fn valid_lower_snake(name: &str) -> bool {

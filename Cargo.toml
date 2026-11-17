@@ -1,7 +1,10 @@
 [package]
 name = "bits-style"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
+description = "Bits’s Coding Style and reference scanner"
+license = "MIT"
+repository = "https://github.com/12bitsD/bits-style"
 
 [[bin]]
 name = "bits"

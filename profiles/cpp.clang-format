@@ -1,0 +1,15 @@
+Language: Cpp
+UseTab: Always
+TabWidth: 8
+IndentWidth: 8
+ColumnLimit: 80
+BreakBeforeBraces: Custom
+BraceWrapping:
+  AfterFunction: true
+  AfterControlStatement: false
+  AfterClass: false
+  AfterEnum: false
+  AfterStruct: false
+  AfterUnion: false
+  BeforeElse: false
+IndentCaseLabels: false

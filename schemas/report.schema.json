@@ -19,7 +19,7 @@
       "required": ["name", "version"],
       "properties": {
         "name": { "type": "string" },
-        "version": { "const": "0.1" }
+        "version": { "const": "0.2" }
       }
     },
     "status": { "enum": ["passed", "violation", "error"] },
@@ -82,7 +82,7 @@
     },
     "summary": {
       "type": "object",
-      "required": ["files_discovered", "files_scanned", "violations", "fixable_violations", "scan_errors", "files_fixed", "violations_fixed"],
+      "required": ["files_discovered", "files_scanned", "violations", "fixable_violations", "scan_errors", "files_fixed", "violations_fixed", "suppressed_violations"],
       "properties": {
         "files_discovered": { "type": "integer", "minimum": 0 },
         "files_scanned": { "type": "integer", "minimum": 0 },
@@ -90,7 +90,8 @@
         "fixable_violations": { "type": "integer", "minimum": 0 },
         "scan_errors": { "type": "integer", "minimum": 0 },
         "files_fixed": { "type": "integer", "minimum": 0 },
-        "violations_fixed": { "type": "integer", "minimum": 0 }
+        "violations_fixed": { "type": "integer", "minimum": 0 },
+        "suppressed_violations": { "type": "integer", "minimum": 0 }
       }
     },
     "fixes": { "type": "array" }
