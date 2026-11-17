@@ -117,7 +117,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.3.4" },
+  "tool": { "name": "bits", "version": "0.3.5" },
   "style": { "name": "Bits’s Coding Style", "version": "0.3" },
   "status": "warning",
   "coverage": {

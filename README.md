@@ -9,6 +9,7 @@ Bits’s Coding Style V0.3 的公开规范与参考扫描器。规范只约束�
 - [Language Profiles](docs/profiles.md)
 - [Go Profile：错误、资源、并发与抽象](profiles/go.md)
 - [Rust 扫描支持边界](docs/rust-support.md)
+- [Agent 集成与完整 Skill](docs/agent-integration.md)
 - [Scanning Protocol V0.3](PROTOCOL.md)
 - [逐语言支持矩阵](docs/language-support.md)
 - [JSON Report Schema](schemas/report.schema.json)
@@ -129,7 +130,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-84 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+85 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 
