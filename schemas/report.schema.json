@@ -1,0 +1,114 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/12bitsD/bits-style/schemas/report.schema.json",
+  "title": "Bits Style Scan Report",
+  "type": "object",
+  "required": ["protocol", "tool", "style", "status", "coverage", "results", "scan_errors", "summary"],
+  "properties": {
+    "protocol": { "const": "bits.style.scan/v1" },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "const": "bits" },
+        "version": { "type": "string" }
+      }
+    },
+    "style": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string" },
+        "version": { "const": "0.1" }
+      }
+    },
+    "status": { "enum": ["passed", "violation", "error"] },
+    "coverage": {
+      "type": "object",
+      "required": ["executed", "not_implemented", "partial", "not_applicable"],
+      "properties": {
+        "executed": { "$ref": "#/$defs/ruleList" },
+        "not_implemented": { "$ref": "#/$defs/ruleList" },
+        "partial": { "$ref": "#/$defs/ruleList" },
+        "not_applicable": { "$ref": "#/$defs/ruleList" }
+      }
+    },
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "file", "range", "message", "actual", "expected", "fixable"],
+        "properties": {
+          "rule_id": { "$ref": "#/$defs/ruleId" },
+          "file": { "type": "string" },
+          "range": {
+            "type": "object",
+            "required": ["start", "end"],
+            "properties": {
+              "start": { "$ref": "#/$defs/position" },
+              "end": { "$ref": "#/$defs/position" }
+            }
+          },
+          "message": { "type": "string" },
+          "actual": true,
+          "expected": true,
+          "fixable": { "type": "boolean" }
+        }
+      }
+    },
+    "passed": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "file", "status"],
+        "properties": {
+          "rule_id": { "$ref": "#/$defs/ruleId" },
+          "file": { "type": "string" },
+          "status": { "const": "passed" }
+        }
+      }
+    },
+    "scan_errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["file", "error", "message"],
+        "properties": {
+          "file": { "type": "string" },
+          "error": { "type": "string" },
+          "message": { "type": "string" }
+        }
+      }
+    },
+    "summary": {
+      "type": "object",
+      "required": ["files_discovered", "files_scanned", "violations", "fixable_violations", "scan_errors", "files_fixed", "violations_fixed"],
+      "properties": {
+        "files_discovered": { "type": "integer", "minimum": 0 },
+        "files_scanned": { "type": "integer", "minimum": 0 },
+        "violations": { "type": "integer", "minimum": 0 },
+        "fixable_violations": { "type": "integer", "minimum": 0 },
+        "scan_errors": { "type": "integer", "minimum": 0 },
+        "files_fixed": { "type": "integer", "minimum": 0 },
+        "violations_fixed": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "fixes": { "type": "array" }
+  },
+  "$defs": {
+    "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-5])$", "type": "string" },
+    "ruleList": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/ruleId" },
+      "uniqueItems": true
+    },
+    "position": {
+      "type": "object",
+      "required": ["line", "column"],
+      "properties": {
+        "line": { "type": "integer", "minimum": 1 },
+        "column": { "type": "integer", "minimum": 1 }
+      }
+    }
+  }
+}
