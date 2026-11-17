@@ -38,7 +38,7 @@
 | TypeScript | `.ts`, `.mts`, `.cts` |
 | TSX | `.tsx` |
 
-Rust 目前只有规范 Profile，没有扫描适配。Go 和其他语言同样尚未声明支持；这些文件不会进入扫描结果，也不应被描述为已经通过 Bits’s Coding Style。
+Rust 目前只有规范 Profile，没有扫描适配。Go 已有独立的[语义规范](../profiles/go.md)，但同样没有扫描适配；Go 文件不会进入当前扫描结果，不应被描述为已经通过 Bits 的自动检查。其他语言尚未声明支持。
 
 ## 依赖图边界
 

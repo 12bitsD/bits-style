@@ -1,6 +1,6 @@
 # Language Profiles
 
-Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则。
+Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则。基础语法和语言官方工具已经覆盖的问题不重复检查；核心目标是让代码和逻辑简单到不容易出错。
 
 | Profile | Formatter | 缩进 | 函数/变量命名 | 大括号 | 资源与错误处理 |
 |---|---|---|---|---|---|
@@ -8,6 +8,7 @@ Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则�
 | Python | ruff format | 4 Space | `lower_snake_case` | 不适用 | `with`、`raise`；显式忽略使用 `_ = call()` |
 | JavaScript/TypeScript/TSX | 项目既有 formatter + EditorConfig | 2 Space | `lowerCamelCase` | `{` 同行 | `try/finally`；显式忽略使用 `void call()` |
 | Rust | rustfmt | 4 Space | `lower_snake_case`，枚举成员 `PascalCase` | rustfmt | `Drop`、`?`；显式忽略使用 `let _ = call()` |
+| Go | gofmt/goimports | gofmt 决定 | 导出 `PascalCase`，未导出 `lowerCamelCase` | gofmt | `defer`、`context`、显式 error 路径；禁止 goto |
 
 ## 配置
 
@@ -17,6 +18,8 @@ Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则�
 - `profiles/python-ruff.toml`
 - `profiles/javascript.editorconfig`
 - `profiles/rust-rustfmt.toml`
+
+Go 使用独立的语义规范 [`profiles/go.md`](../profiles/go.md)，不增加重复格式配置。
 
 这些文件只覆盖格式底线。语义检查由 `bits` 和各语言编译器/linter 共同完成，不能仅用 formatter 宣称全部 BCS 通过。
 

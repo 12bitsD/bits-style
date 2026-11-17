@@ -3,10 +3,11 @@
 [![CI](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml/badge.svg)](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bits’s Coding Style V0.2 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。
+Bits’s Coding Style V0.2 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
 
 - [Coding Style V0.2：BCS001–BCS015](STYLE.md)
 - [Language Profiles](docs/profiles.md)
+- [Go Profile：错误、资源、并发与抽象](profiles/go.md)
 - [Scanning Protocol V0.2](PROTOCOL.md)
 - [逐语言支持矩阵](docs/language-support.md)
 - [JSON Report Schema](schemas/report.schema.json)
@@ -23,7 +24,7 @@ C/C++ 保留 Tab 8 和函数换行大括号；Python/Rust 使用 4 空格；Java
 
 `bits` 是 Rust 编写的独立 CLI，使用 Tree-sitter 解析源码，不执行被扫描项目代码，扫描过程不访问网络。
 
-当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX。Rust 目前只有规范 Profile，没有扫描适配。
+当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX。Rust 和 Go 目前只有规范 Profile，没有扫描适配。
 
 **能解析一种语言不等于完整实现全部规则。** 函数接口、状态、错误处理和部分语义检查只支持文档列出的保守子集。逐规则状态见[支持矩阵](docs/language-support.md)。
 

@@ -12,7 +12,9 @@
 
 语言 Profile 定义缩进、括号、命名、续行、资源清理和工具配置。编译器、ABI、FFI、框架重写方法及回调强制要求的签名和命名优先于本规范，但必须使用第 5 节的行级豁免。
 
-当前 Profile：C/C++、Python、JavaScript/TypeScript/TSX、Rust。Rust 只有规范 Profile，扫描器支持状态以 `docs/language-support.md` 为准。
+当前 Profile：C/C++、Python、JavaScript/TypeScript/TSX、Rust、Go。Rust 和 Go 目前只有规范 Profile，扫描器支持状态以 `docs/language-support.md` 为准。
+
+基础语法和语言官方工具已经覆盖的问题不在 Profile 中重复检查。Bits 的底层目标是让代码和逻辑简单到不容易出错，优先约束错误路径、状态、资源、并发和抽象成本。
 
 ## 2. 规则
 
