@@ -382,10 +382,16 @@ fn scan_file(file: &DiscoveredFile) -> FileScan {
         }
     };
     if tree.root_node().has_error() {
+        let location = crate::language::first_error_position(&tree)
+            .map(|(line, column)| format!(" at {line}:{column}"))
+            .unwrap_or_default();
         scan.errors.push(ScanError {
             file: file.relative.clone(),
             error: "parse_error".to_owned(),
-            message: format!("{} syntax tree contains errors", file.language.name()),
+            message: format!(
+                "{} syntax tree contains errors{location}",
+                file.language.name()
+            ),
         });
         return scan;
     }

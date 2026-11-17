@@ -82,7 +82,7 @@ bits style check --diff --commit 61a5793 src
   → 按固定顺序输出
 ```
 
-单文件规则不得依赖扫描顺序；串行与并行结果必须一致。扫描不得访问网络或执行被扫描项目代码。解析失败属于扫描错误，不得静默跳过。LLM 不参与规则判定。
+单文件规则不得依赖扫描顺序；串行与并行结果必须一致。扫描不得访问网络或执行被扫描项目代码。解析失败属于扫描错误，不得静默跳过，错误信息包含可用的行列位置。TypeScript 动态 import 泛型和动态类型引用使用文档说明的内存兼容处理，不修改源文件。LLM 不参与规则判定。
 
 输出按 `file → start.line → start.column → rule_id` 排序。
 
@@ -117,7 +117,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.3.1" },
+  "tool": { "name": "bits", "version": "0.3.2" },
   "style": { "name": "Bits’s Coding Style", "version": "0.3" },
   "status": "warning",
   "coverage": {

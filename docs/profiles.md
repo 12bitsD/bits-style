@@ -23,6 +23,13 @@ Go 使用独立的语义规范 [`profiles/go.md`](../profiles/go.md)，不增加
 
 这些文件只覆盖格式底线。语义检查由 `bits` 和各语言编译器/linter 共同完成，不能仅用 formatter 宣称全部 BCS 通过。
 
+## Python 数据契约
+
+- `Annotated`、`Literal`、`Callable` 和其他明确类型表达式按类型别名处理，不计为可变全局状态。
+- 带类型注解的普通变量不自动视为类型别名；类型别名使用 `PascalCase`，私有前缀允许下划线。
+- Pydantic/JSON 数据字段保留外部契约命名；属性更新不算参数重赋值。
+- 模板插值中的标识符计为真实引用，`__all__` 中的 re-export 不算未使用导入。
+
 ## React / TSX
 
 - 返回 JSX 的函数组件自动识别为 React 组件，允许 `PascalCase`，无需逐行豁免。

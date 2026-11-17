@@ -72,6 +72,7 @@ bits:explain(BCS003): <职责>；<必须保持内聚的原因>；<拆分风险>
 
 - 每行最多一条语句，禁止一行多个赋值和链式赋值。
 - 禁止在条件表达式内赋值；语言提供的结构化条件初始化语法由 Profile 决定。
+- 链式赋值按真实 assignment target 判断，函数调用的关键字参数不属于链式赋值。
 - 禁止使用逗号表达式代替大括号。
 - 禁止嵌套三元表达式和双重否定条件。
 - 混合不同优先级的运算符时必须加括号。
@@ -101,7 +102,8 @@ bits:explain(BCS003): <职责>；<必须保持内聚的原因>；<拆分风险>
 
 - C/C++、Python、Rust：函数和变量使用 `lower_snake_case`。
 - JavaScript/TypeScript/TSX：函数和变量使用 `lowerCamelCase`。
-- 类型使用 `PascalCase`，模块级字面量常量使用 `UPPER_SNAKE_CASE`；普通 const 局部变量、服务对象、配置对象和数组仍按普通变量命名，Rust 枚举成员使用 `PascalCase`。
+- 类型和类型别名使用 `PascalCase`；模块级 const 同时接受 `UPPER_SNAKE_CASE` 和 Profile 普通变量名，Rust 枚举成员使用 `PascalCase`。
+- Pydantic/JSON 数据字段、HTTP 框架回调、React 组件和 memo 包装组件保留外部命名契约，不强制改成 `lower_snake_case`。
 - 禁止匈牙利命名。
 - 编译器、ABI、FFI、框架重写方法和回调的强制命名优先，但必须行级豁免。
 - 名字长度应与作用域匹配，带单位的值使用 `timeout_ms` 等后缀，布尔名称优先使用 `is_/has_` 等肯定式 `[REVIEW]`。
@@ -110,7 +112,8 @@ bits:explain(BCS003): <职责>；<必须保持内聚的原因>；<拆分风险>
 
 - 禁止新增可变全局变量、Singleton 和隐式上下文输入。
 - 默认使用 `const/final` 或语言等价机制 `[AUTO-PROFILE]`。
-- 禁止给函数参数重新赋值。
+- 禁止给函数参数重新赋值；对象属性更新与参数绑定替换必须区分。
+- 类型别名不是可变全局状态；`Annotated/Literal/Callable` 等按类型表达式处理。
 - 禁止变量遮蔽，包括局部变量遮蔽参数。
 - 变量是否处于足够小的作用域和生命周期 `[REVIEW]`。
 

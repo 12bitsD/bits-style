@@ -26,6 +26,7 @@ pub struct SyntaxAnalysis {
     pub comments: Vec<Range<usize>>,
     pub jsx: Vec<Range<usize>>,
     pub type_ranges: Vec<Range<usize>>,
+    pub interpolations: Vec<Range<usize>>,
     pub imports: Vec<ImportRecord>,
     pub executed: BTreeSet<String>,
     pub partial: BTreeSet<String>,
@@ -55,6 +56,9 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
                 | "struct_specifier"
         ) {
             result.type_ranges.push(node.byte_range());
+        }
+        if matches!(kind, "interpolation" | "template_substitution") {
+            result.interpolations.push(node.byte_range());
         }
     });
     result.executed.extend(
@@ -173,7 +177,9 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             }
             "assignment"
                 if language == Language::Python
-                    && node_text(source, node).matches('=').count() > 1 =>
+                    && node
+                        .child_by_field_name("right")
+                        .is_some_and(|right| right.kind() == "assignment") =>
             {
                 push(
                     &mut result.violations,
@@ -405,6 +411,7 @@ fn analyze_function(
         let name = node_text(source, name_node);
         if !is_constructor_name(node, source, name)
             && !(react_component && valid_pascal_case(name))
+            && !is_framework_method_name(language, name)
             && !valid_function_name(language, name)
         {
             let expected = if language.is_script() {
@@ -1150,7 +1157,13 @@ fn analyze_import(
     result: &mut SyntaxAnalysis,
 ) {
     let text = node_text(source, node).trim();
-    let masked = mask_ranges(source, &result.strings, &result.comments);
+    let masked = mask_ranges(
+        source,
+        &result.strings,
+        &result.comments,
+        &result.interpolations,
+    );
+    let reexports = python_reexports(source);
     let mut record = |specifier: String, binding: Option<String>, type_only: bool| {
         if binding.as_deref() == Some("*") || text.contains("import *") {
             push(
@@ -1165,6 +1178,7 @@ fn analyze_import(
         }
         if let Some(name) = binding.as_deref()
             && name != "*"
+            && !reexports.contains(name)
             && count_identifier(&masked, name) <= 1
         {
             push(
@@ -1299,6 +1313,22 @@ fn parse_js_bindings(clause: &str) -> Vec<(String, bool)> {
     bindings
 }
 
+fn python_reexports(source: &str) -> BTreeSet<String> {
+    static REEXPORT: OnceLock<Regex> = OnceLock::new();
+    let regex =
+        REEXPORT.get_or_init(|| Regex::new(r#"[\"']([A-Za-z_][A-Za-z0-9_]*)[\"']"#).unwrap());
+    source
+        .split("__all__")
+        .skip(1)
+        .flat_map(|suffix| {
+            regex
+                .captures_iter(suffix)
+                .map(|capture| capture[1].to_owned())
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
 fn analyze_type(
     language: Language,
     relative: &str,
@@ -1361,6 +1391,7 @@ fn analyze_variable(
                         .iter()
                         .any(|prefix| value.starts_with(prefix));
                 node.kind() == "assignment"
+                    && !is_type_alias(language, source, node)
                     && !name.starts_with('_')
                     && (!valid_upper_snake(name) || mutable_literal)
             }
@@ -1388,8 +1419,30 @@ fn analyze_variable(
         }
     }
 
-    if language == Language::Python && node.kind() == "assignment" {
+    if language == Language::Python && is_type_alias(language, source, node) {
         if let Some(target) = node.child_by_field_name("left") {
+            let name = node_text(source, target);
+            if !valid_pascal_case(name) {
+                push(
+                    violations,
+                    relative,
+                    target,
+                    "BCS010",
+                    "type aliases must use PascalCase",
+                    name,
+                    "PascalCase",
+                );
+            }
+        }
+        return;
+    }
+    if language == Language::Python && has_type_ancestor(node) {
+        return;
+    }
+    if language == Language::Python && node.kind() == "assignment" {
+        if let Some(target) = node.child_by_field_name("left")
+            && target.kind() == "identifier"
+        {
             let mut names = BTreeSet::new();
             collect_pattern_identifiers(source, target, &mut names);
             for name in names {
@@ -1424,11 +1477,14 @@ fn analyze_variable(
                 && (text.trim_start().starts_with("const ")
                     || node.parent().is_some_and(|parent| {
                         node_text(source, parent).trim_start().starts_with("const ")
-                    }))
-                && is_literal_constant_value(text))
+                    })))
                 || node.kind() == "preproc_def";
-            if is_constant {
-                if !valid_upper_snake(name_text) {
+            if is_constant
+                && !(language.is_script()
+                    && valid_pascal_case(name_text)
+                    && is_react_component(language, node, name_text))
+            {
+                if !valid_upper_snake(name_text) && !valid_function_name(language, name_text) {
                     push(
                         violations,
                         relative,
@@ -1439,7 +1495,11 @@ fn analyze_variable(
                         "UPPER_SNAKE_CASE",
                     );
                 }
-            } else if !valid_function_name(language, name_text) {
+            } else if !valid_function_name(language, name_text)
+                && !(language.is_script()
+                    && valid_pascal_case(name_text)
+                    && is_react_component(language, node, name_text))
+            {
                 let expected = if language.is_script() {
                     "lowerCamelCase"
                 } else {
@@ -1459,11 +1519,64 @@ fn analyze_variable(
     }
 }
 
-fn is_literal_constant_value(text: &str) -> bool {
+fn is_type_alias(language: Language, source: &str, node: Node) -> bool {
+    if language != Language::Python || node.child_by_field_name("type").is_some() {
+        return false;
+    }
+    let text = node_text(source, node);
+    let name = text.split('=').next().unwrap_or("").trim();
     let value = text.split_once('=').map_or("", |parts| parts.1.trim());
-    value.starts_with(['\"', '\'', '`'])
-        || value.parse::<f64>().is_ok()
-        || matches!(value, "true" | "false")
+    let prefixes = [
+        "Annotated[",
+        "Literal[",
+        "Callable[",
+        "Union[",
+        "Optional[",
+        "TypeVar(",
+        "NewType(",
+        "Type[",
+        "list[",
+        "dict[",
+        "tuple[",
+        "set[",
+        "frozenset[",
+        "Sequence[",
+        "Mapping[",
+        "MutableMapping[",
+        "Iterable[",
+        "Iterator[",
+        "Awaitable[",
+        "Coroutine[",
+        "Protocol",
+        "TypedDict",
+        "NamedTuple",
+        "TypeAlias",
+        "TypeAliasType",
+        "LiteralString",
+        "Self",
+        "ClassVar",
+        "Final",
+        "type ",
+    ];
+    if prefixes.iter().any(|prefix| value.starts_with(prefix)) {
+        return true;
+    }
+    let builtins = [
+        "int", "str", "float", "bool", "bytes", "dict", "list", "set", "tuple", "Any", "Self",
+    ];
+    if builtins.contains(&value) {
+        return true;
+    }
+    name.chars()
+        .next()
+        .is_some_and(|character| character.is_uppercase() || character == '_')
+        && value
+            .chars()
+            .next()
+            .is_some_and(|character| character.is_uppercase())
+        && value
+            .chars()
+            .all(|character| character.is_alphanumeric() || character == '_')
 }
 
 fn analyze_hidden_input(
@@ -1532,7 +1645,7 @@ fn analyze_spacing(
     jsx: &[Range<usize>],
     violations: &mut Vec<Violation>,
 ) {
-    let masked = mask_ranges(source, strings, comments);
+    let masked = mask_ranges(source, strings, comments, &[]);
     static KEYWORD: OnceLock<Regex> = OnceLock::new();
     static CALL: OnceLock<Regex> = OnceLock::new();
     static INNER: OnceLock<Regex> = OnceLock::new();
@@ -1582,6 +1695,34 @@ fn analyze_spacing(
                     | "await"
                     | "function"
                     | "new"
+                    | "import"
+                    | "export"
+                    | "and"
+                    | "or"
+                    | "except"
+                    | "not"
+                    | "in"
+                    | "is"
+                    | "delete"
+                    | "with"
+                    | "as"
+                    | "assert"
+                    | "yield"
+                    | "raise"
+                    | "from"
+                    | "global"
+                    | "nonlocal"
+                    | "lambda"
+                    | "class"
+                    | "def"
+                    | "try"
+                    | "finally"
+                    | "match"
+                    | "case"
+                    | "else"
+                    | "elif"
+                    | "break"
+                    | "continue"
             ) {
                 continue;
             }
@@ -1631,11 +1772,26 @@ fn analyze_spacing(
     }
 }
 
-fn mask_ranges(source: &str, strings: &[Range<usize>], comments: &[Range<usize>]) -> String {
+fn mask_ranges(
+    source: &str,
+    strings: &[Range<usize>],
+    comments: &[Range<usize>],
+    preserve: &[Range<usize>],
+) -> String {
     let mut bytes = source.as_bytes().to_vec();
     for range in strings {
-        for byte in bytes.get_mut(range.clone()).unwrap_or(&mut []) {
-            if *byte != b'\n' {
+        for (index, byte) in bytes
+            .get_mut(range.clone())
+            .unwrap_or(&mut [])
+            .iter_mut()
+            .enumerate()
+        {
+            let offset = range.start + index;
+            if *byte != b'\n'
+                && !preserve
+                    .iter()
+                    .any(|preserve| preserve.start <= offset && offset < preserve.end)
+            {
                 *byte = b'x';
             }
         }
@@ -1877,6 +2033,14 @@ fn function_name(function: Node) -> Option<Node> {
     }
 }
 
+fn is_framework_method_name(language: Language, name: &str) -> bool {
+    language == Language::Python
+        && matches!(
+            name,
+            "do_GET" | "do_POST" | "do_PUT" | "do_DELETE" | "do_PATCH" | "do_HEAD" | "do_OPTIONS"
+        )
+}
+
 fn is_react_component(language: Language, function: Node, name: &str) -> bool {
     if !language.is_script() || !valid_pascal_case(name) {
         return false;
@@ -1976,7 +2140,7 @@ fn valid_upper_snake(name: &str) -> bool {
 fn valid_pascal_case(name: &str) -> bool {
     static REGEX: OnceLock<Regex> = OnceLock::new();
     REGEX
-        .get_or_init(|| Regex::new(r"^[A-Z][A-Za-z0-9]*$").unwrap())
+        .get_or_init(|| Regex::new(r"^_*[A-Z][A-Za-z0-9]*$").unwrap())
         .is_match(name)
 }
 
