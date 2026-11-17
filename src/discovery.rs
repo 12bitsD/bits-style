@@ -341,6 +341,7 @@ fn git_diff_lines(
     let mut current: Option<String> = None;
     for line in text.lines() {
         if let Some(path) = line.strip_prefix("+++ ") {
+            let path = path.trim_end_matches(['\t', '\r']);
             current = if path == "/dev/null" {
                 None
             } else {

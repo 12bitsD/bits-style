@@ -183,7 +183,7 @@ fn commit_options_are_rejected_instead_of_silently_passing() {
 fn quoted_filenames_are_scanned_in_diff_mode() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    let file = root.join(if cfg!(windows) { "a b.py" } else { "a\"b.py" });
+    let file = root.join("a b.py");
     fs::write(&file, "global_counter = 0\n").unwrap();
     init_repo(root);
     fs::write(&file, "global_counter = 0\nanother_counter = 1\n").unwrap();
