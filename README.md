@@ -124,7 +124,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-54 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+55 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 
