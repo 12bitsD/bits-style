@@ -4,6 +4,7 @@ use std::sync::OnceLock;
 
 use regex::Regex;
 
+use crate::discovery::LineScope;
 use crate::language::Language;
 use crate::model::{AppliedFix, Violation};
 
@@ -112,6 +113,18 @@ pub fn scan(
                 ));
             }
         }
+        if text.contains("bits:explain") && !valid_explanation(text) {
+            violations.push(Violation::new(
+                "BCS015",
+                relative,
+                point.0,
+                point.1,
+                "explanation must use bits:explain(BCS003): reason",
+                text.lines().next().unwrap_or(""),
+                "bits:explain(BCS003): reason",
+                false,
+            ));
+        }
         if text.contains("vim:set") || text.contains("-*- mode:") {
             violations.push(Violation::new(
                 "BCS015",
@@ -144,11 +157,13 @@ pub fn fix(
     source: &str,
     strings: &[Range<usize>],
     language: Language,
+    line_scope: &LineScope,
 ) -> (String, Vec<AppliedFix>) {
     let mut output = String::with_capacity(source.len() + 16);
     let mut offset = 0;
     let mut indentation_fixes = 0;
     let mut trailing_fixes = 0;
+    let mut line_number = 1;
 
     for line in source.split_inclusive('\n') {
         let ending = if line.ends_with("\r\n") {
@@ -159,6 +174,17 @@ pub fn fix(
             ""
         };
         let content = &line[..line.len() - ending.len()];
+        let can_fix = match line_scope {
+            LineScope::WholeFile => true,
+            LineScope::Added(lines) => lines.contains(&line_number),
+        };
+        if !can_fix {
+            output.push_str(content);
+            output.push_str(ending);
+            offset += line.len();
+            line_number += 1;
+            continue;
+        }
         if inside_any(strings, offset) {
             output.push_str(content);
         } else {
@@ -194,6 +220,7 @@ pub fn fix(
         }
         output.push_str(ending);
         offset += line.len();
+        line_number += 1;
     }
 
     let mut newline_fixes = 0;
@@ -258,6 +285,13 @@ fn valid_todo(text: &str) -> bool {
             .is_some_and(|value| !value.trim().is_empty())
 }
 
+fn valid_explanation(text: &str) -> bool {
+    static EXPLANATION: OnceLock<Regex> = OnceLock::new();
+    EXPLANATION
+        .get_or_init(|| Regex::new(r"bits:explain\(BCS003\):\s*\S.*").unwrap())
+        .is_match(text)
+}
+
 fn looks_like_commented_code(text: &str) -> bool {
     let body = text
         .trim()
@@ -266,6 +300,9 @@ fn looks_like_commented_code(text: &str) -> bool {
         .trim_start_matches("/*")
         .trim_end_matches("*/")
         .trim();
+    if body.starts_with("bits:allow") || body.starts_with("bits:explain") {
+        return false;
+    }
     let code_tokens = [
         "return ", "if (", "if(", "for (", "while (", " = ", ";", "{", "}", "=>",
     ];

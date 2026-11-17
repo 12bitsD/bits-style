@@ -30,12 +30,18 @@ pub struct DiscoveredFile {
     pub line_scope: LineScope,
 }
 
+pub struct Discovery {
+    pub root: PathBuf,
+    pub files: Vec<DiscoveredFile>,
+    pub unsupported: Vec<String>,
+}
+
 pub fn discover(
     inputs: &[PathBuf],
     scope: Scope,
     no_ignore: bool,
     excludes: &[String],
-) -> Result<(PathBuf, Vec<DiscoveredFile>), String> {
+) -> Result<Discovery, String> {
     if let Scope::Diff(base) = &scope {
         return discover_diff(inputs, base, no_ignore, excludes);
     }
@@ -60,7 +66,7 @@ fn discover_diff(
     base: &str,
     no_ignore: bool,
     excludes: &[String],
-) -> Result<(PathBuf, Vec<DiscoveredFile>), String> {
+) -> Result<Discovery, String> {
     let first = inputs
         .first()
         .cloned()
@@ -95,17 +101,24 @@ fn finalize_files(
     paths: BTreeSet<PathBuf>,
     excludes: &[String],
     line_scopes: Option<&BTreeMap<String, LineScope>>,
-) -> Result<(PathBuf, Vec<DiscoveredFile>), String> {
+) -> Result<Discovery, String> {
     let mut files = Vec::new();
+    let mut unsupported = Vec::new();
     for absolute in paths {
-        let Some(language) = Language::from_path(&absolute) else {
-            continue;
-        };
         let relative = absolute
             .strip_prefix(&root)
             .unwrap_or(&absolute)
             .to_string_lossy()
             .replace('\\', "/");
+        let Some(language) = Language::from_path(&absolute) else {
+            if matches!(
+                absolute.extension().and_then(|value| value.to_str()),
+                Some("rs" | "go")
+            ) {
+                unsupported.push(relative);
+            }
+            continue;
+        };
         files.push(DiscoveredFile {
             absolute,
             line_scope: line_scopes
@@ -126,8 +139,14 @@ fn finalize_files(
     }
     let globs = globs.build().map_err(|error| error.to_string())?;
     files.retain(|file| !globs.is_match(&file.relative) && !excluded_directory(&file.relative));
+    unsupported.retain(|file| !globs.is_match(file) && !excluded_directory(file));
+    unsupported.sort();
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
-    Ok((root, files))
+    Ok(Discovery {
+        root,
+        files,
+        unsupported,
+    })
 }
 
 fn excluded_directory(relative: &str) -> bool {
@@ -283,6 +302,20 @@ fn git_diff_lines(
     base: &str,
     pathspecs: &[String],
 ) -> Result<BTreeMap<String, LineScope>, String> {
+    let revision = Command::new("git")
+        .current_dir(root)
+        .args([
+            "rev-parse",
+            "--verify",
+            "--quiet",
+            "--end-of-options",
+            &format!("{base}^{{commit}}"),
+        ])
+        .output()
+        .map_err(|error| format!("failed to validate diff commit: {error}"))?;
+    if !revision.status.success() {
+        return Err(format!("invalid diff commit: {base}"));
+    }
     let output = Command::new("git")
         .current_dir(root)
         .args([
@@ -292,6 +325,7 @@ fn git_diff_lines(
             "--unified=0",
             "--no-color",
             "--no-ext-diff",
+            "--end-of-options",
             base,
             "--",
         ])
@@ -310,7 +344,8 @@ fn git_diff_lines(
             current = if path == "/dev/null" {
                 None
             } else {
-                let path = path.strip_prefix("b/").unwrap_or(path).to_owned();
+                let decoded = decode_git_path(path);
+                let path = decoded.strip_prefix("b/").unwrap_or(&decoded).to_owned();
                 files
                     .entry(path.clone())
                     .or_insert_with(|| LineScope::Added(BTreeSet::new()));
@@ -333,6 +368,46 @@ fn git_diff_lines(
         lines.extend(start..start + count);
     }
     Ok(files)
+}
+
+fn decode_git_path(path: &str) -> String {
+    if !(path.starts_with('"') && path.ends_with('"') && path.len() >= 2) {
+        return path.to_owned();
+    }
+    let bytes = &path.as_bytes()[1..path.len() - 1];
+    let mut output = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != b'\\' {
+            output.push(bytes[index]);
+            index += 1;
+            continue;
+        }
+        index += 1;
+        if index >= bytes.len() {
+            break;
+        }
+        match bytes[index] {
+            b'n' => output.push(b'\n'),
+            b't' => output.push(b'\t'),
+            b'r' => output.push(b'\r'),
+            b'\\' => output.push(b'\\'),
+            b'"' => output.push(b'"'),
+            digit @ b'0'..=b'7' => {
+                let mut value = digit - b'0';
+                for _ in 0..2 {
+                    if index + 1 < bytes.len() && matches!(bytes[index + 1], b'0'..=b'7') {
+                        index += 1;
+                        value = value * 8 + (bytes[index] - b'0');
+                    }
+                }
+                output.push(value);
+            }
+            other => output.push(other),
+        }
+        index += 1;
+    }
+    String::from_utf8_lossy(&output).into_owned()
 }
 
 fn parse_hunk(line: &str) -> Option<(usize, usize)> {

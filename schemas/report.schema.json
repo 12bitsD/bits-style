@@ -5,7 +5,7 @@
   "type": "object",
   "required": ["protocol", "tool", "style", "status", "coverage", "results", "scan_errors", "summary"],
   "properties": {
-    "protocol": { "const": "bits.style.scan/v1" },
+    "protocol": { "const": "bits.style.scan/v2" },
     "tool": {
       "type": "object",
       "required": ["name", "version"],
@@ -19,10 +19,10 @@
       "required": ["name", "version"],
       "properties": {
         "name": { "type": "string" },
-        "version": { "const": "0.2" }
+        "version": { "const": "0.3" }
       }
     },
-    "status": { "enum": ["passed", "violation", "error"] },
+    "status": { "enum": ["passed", "violation", "warning", "unsupported", "error"] },
     "coverage": {
       "type": "object",
       "required": ["executed", "not_implemented", "partial", "not_applicable"],
@@ -37,7 +37,7 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["rule_id", "file", "range", "message", "actual", "expected", "fixable"],
+        "required": ["rule_id", "file", "range", "message", "actual", "expected", "fixable", "severity", "confidence"],
         "properties": {
           "rule_id": { "$ref": "#/$defs/ruleId" },
           "file": { "type": "string" },
@@ -52,7 +52,10 @@
           "message": { "type": "string" },
           "actual": true,
           "expected": true,
-          "fixable": { "type": "boolean" }
+          "fixable": { "type": "boolean" },
+          "severity": { "enum": ["violation", "warning"] },
+          "confidence": { "enum": ["high", "low"] },
+          "explanation": { "type": "string" }
         }
       }
     },
@@ -82,7 +85,7 @@
     },
     "summary": {
       "type": "object",
-      "required": ["files_discovered", "files_scanned", "violations", "fixable_violations", "scan_errors", "files_fixed", "violations_fixed", "suppressed_violations"],
+      "required": ["files_discovered", "files_scanned", "violations", "fixable_violations", "scan_errors", "files_fixed", "violations_fixed", "suppressed_violations", "warnings", "unsupported_files"],
       "properties": {
         "files_discovered": { "type": "integer", "minimum": 0 },
         "files_scanned": { "type": "integer", "minimum": 0 },
@@ -91,10 +94,16 @@
         "scan_errors": { "type": "integer", "minimum": 0 },
         "files_fixed": { "type": "integer", "minimum": 0 },
         "violations_fixed": { "type": "integer", "minimum": 0 },
-        "suppressed_violations": { "type": "integer", "minimum": 0 }
+        "suppressed_violations": { "type": "integer", "minimum": 0 },
+        "warnings": { "type": "integer", "minimum": 0 },
+        "unsupported_files": { "type": "integer", "minimum": 0 }
       }
     },
-    "fixes": { "type": "array" }
+    "fixes": { "type": "array" },
+    "unsupported": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
   },
   "$defs": {
     "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-5])$", "type": "string" },

@@ -13,13 +13,13 @@
 |---|---|---|---|---|
 | `BCS001` | partial | partial | partial | 禁止混用及错误缩进字符，处理行尾空白和末尾换行；续行与连续块宽度未完整判定 |
 | `BCS002` | partial | partial | partial | 默认 80 列；字符串字面量保守识别用户文本、日志和 URL；续行由 Profile formatter 决定 |
-| `BCS003` | partial | partial | partial | 非空非注释代码行、嵌套、局部绑定和圈复杂度；扁平 case 豁免；复杂声明可能只覆盖部分绑定 |
+| `BCS003` | partial | partial | partial | 四项规模指标产生 warning，优先提示拆分；支持 `bits:explain` 和 `explanation` 字段；扁平 case 豁免 |
 | `BCS004` | partial | partial | partial | 参数数量、布尔参数和 C/C++ 参数名；外部签名使用行级豁免 |
 | `BCS005` | partial | partial | partial | 冗余 else；C 限制 goto，C++ 禁止 goto；查表属于 REVIEW |
 | `BCS006` | partial | partial | partial | 每行语句、条件/链式赋值、逗号表达式、嵌套三元、双重否定；混合运算符覆盖仍不完整 |
 | `BCS007` | supported | not_applicable | supported | 所有控制块必须加大括号；C/C++ 函数 `{` 下一行，JS/TS 同行 |
 | `BCS008` | partial | not_applicable | partial | C/C++ case 对齐 switch；JS/TS 使用一级缩进；fallthrough 采用保守检查 |
-| `BCS009` | partial | partial | partial | 常见关键字、调用、括号和二元运算符空格；其余交给 Profile formatter |
+| `BCS009` | partial | partial | TSX 为低置信 warning；其他为 partial | 常见确定性格式问题；JSX 区域交给 formatter，普通 TS/JS 使用受限文本检查 |
 | `BCS010` | partial | partial | partial | C/Python 使用 lower_snake_case；JS/TS 使用 lowerCamelCase；类型 PascalCase、常量 UPPER_SNAKE_CASE |
 | `BCS011` | partial | partial | partial | 常见可变全局及容器常量、直接环境读取、直接参数重赋值和部分参数遮蔽；完整作用域与全部隐藏输入不自动判定 |
 | `BCS012` | partial | not_applicable | not_applicable | C/C++ 宏、inline 和函数内条件编译；宏的全部调用方语义不完整 |
@@ -38,7 +38,7 @@
 | TypeScript | `.ts`, `.mts`, `.cts` |
 | TSX | `.tsx` |
 
-Rust 目前只有规范 Profile，没有扫描适配。Go 已有独立的[语义规范](../profiles/go.md)，但同样没有扫描适配；Go 文件不会进入当前扫描结果，不应被描述为已经通过 Bits 的自动检查。其他语言尚未声明支持。
+Rust 目前只有规范 Profile，没有扫描适配。Go 已有独立的[语义规范](../profiles/go.md)，但同样没有扫描适配。这些文件会进入报告的 `unsupported` 列表：`report` 明确展示，`check` 返回 2，避免形成“没有覆盖却 passed”。其他语言尚未声明支持。
 
 ## 依赖图边界
 

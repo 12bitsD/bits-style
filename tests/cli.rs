@@ -577,7 +577,7 @@ fn diff_checks_functions_whose_bodies_contain_added_lines() {
     ]);
     assert_eq!(
         output.status.code(),
-        Some(1),
+        Some(0),
         "stdout={} stderr={}",
         String::from_utf8_lossy(&output.stdout),
         String::from_utf8_lossy(&output.stderr)

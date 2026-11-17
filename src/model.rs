@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-pub const PROTOCOL_VERSION: &str = "bits.style.scan/v1";
-pub const STYLE_VERSION: &str = "0.2";
+pub const PROTOCOL_VERSION: &str = "bits.style.scan/v2";
+pub const STYLE_VERSION: &str = "0.3";
 pub const RULE_IDS: [&str; 15] = [
     "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007", "BCS008", "BCS009",
     "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015",
@@ -46,6 +46,20 @@ pub struct Violation {
     pub actual: Value,
     pub expected: Value,
     pub fixable: bool,
+    #[serde(default = "default_severity")]
+    pub severity: String,
+    #[serde(default = "default_confidence")]
+    pub confidence: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub explanation: Option<String>,
+}
+
+fn default_severity() -> String {
+    "violation".to_owned()
+}
+
+fn default_confidence() -> String {
+    "high".to_owned()
 }
 
 impl Violation {
@@ -68,6 +82,9 @@ impl Violation {
             actual: actual.into(),
             expected: expected.into(),
             fixable,
+            severity: "violation".to_owned(),
+            confidence: "high".to_owned(),
+            explanation: None,
         }
     }
 }
@@ -97,6 +114,8 @@ pub struct Summary {
     pub files_fixed: usize,
     pub violations_fixed: usize,
     pub suppressed_violations: usize,
+    pub warnings: usize,
+    pub unsupported_files: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -146,6 +165,8 @@ pub struct Report {
     pub summary: Summary,
     #[serde(skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<FileFix>,
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub unsupported: Vec<String>,
 }
 
 impl Default for Report {
@@ -173,6 +194,7 @@ impl Report {
             scan_errors: Vec::new(),
             summary: Summary::default(),
             fixes: Vec::new(),
+            unsupported: Vec::new(),
         }
     }
 
@@ -193,15 +215,28 @@ impl Report {
         });
         self.scan_errors
             .sort_by(|a, b| (&a.file, &a.error).cmp(&(&b.file, &b.error)));
-        self.summary.violations = self.results.len();
+        self.summary.violations = self
+            .results
+            .iter()
+            .filter(|v| v.severity == "violation")
+            .count();
+        self.summary.warnings = self
+            .results
+            .iter()
+            .filter(|v| v.severity == "warning")
+            .count();
         self.summary.fixable_violations = self.results.iter().filter(|v| v.fixable).count();
         self.summary.scan_errors = self.scan_errors.len();
         self.status = if !self.scan_errors.is_empty() {
             "error"
-        } else if self.results.is_empty() {
-            "passed"
-        } else {
+        } else if self.summary.violations > 0 {
             "violation"
+        } else if !self.unsupported.is_empty() {
+            "unsupported"
+        } else if self.summary.warnings > 0 {
+            "warning"
+        } else {
+            "passed"
         }
         .to_owned();
         self.coverage.partial = self

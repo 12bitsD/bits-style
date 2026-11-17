@@ -24,7 +24,7 @@ fn text(report: &Report, include_passed: bool) -> String {
     let mut output = String::new();
     for violation in &report.results {
         output.push_str(&format!(
-            "{}:{}:{}: {}: {} actual={} expected={} fixable={}\n",
+            "{}:{}:{}: {}: {} actual={} expected={} fixable={} severity={} confidence={}\n",
             violation.file,
             violation.range.start.line,
             violation.range.start.column,
@@ -32,8 +32,13 @@ fn text(report: &Report, include_passed: bool) -> String {
             violation.message,
             display_value(&violation.actual),
             display_value(&violation.expected),
-            if violation.fixable { "yes" } else { "no" }
+            if violation.fixable { "yes" } else { "no" },
+            violation.severity,
+            violation.confidence
         ));
+        if let Some(explanation) = &violation.explanation {
+            output.push_str(&format!("  explanation: {explanation}\n"));
+        }
     }
     for error in &report.scan_errors {
         output.push_str(&format!(
@@ -53,16 +58,20 @@ fn text(report: &Report, include_passed: bool) -> String {
         }
     }
     output.push_str(&format!(
-        "Scanned: {} files\nViolations: {}\nFixable: {}\nSuppressed: {}\nScan errors: {}\nResult: {}\n",
+        "Scanned: {} files\nViolations: {}\nWarnings: {}\nFixable: {}\nSuppressed: {}\nUnsupported: {}\nScan errors: {}\nResult: {}\n",
         report.summary.files_scanned,
         report.summary.violations,
+        report.summary.warnings,
         report.summary.fixable_violations,
         report.summary.suppressed_violations,
+        report.summary.unsupported_files,
         report.summary.scan_errors,
-        if report.status == "passed" {
-            "PASS"
-        } else {
-            "FAIL"
+        match report.status.as_str() {
+            "passed" => "PASS",
+            "violation" => "FAIL",
+            "warning" => "WARNING",
+            "unsupported" => "UNSUPPORTED",
+            _ => "ERROR",
         }
     ));
     output
@@ -82,7 +91,7 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
     for violation in &report.results {
         lines.push(
             serde_json::to_string(&json!({
-                "type": "violation",
+                "type": violation.severity,
                 "rule_id": violation.rule_id,
                 "file": violation.file,
                 "line": violation.range.start.line,
@@ -91,6 +100,9 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
                 "actual": violation.actual,
                 "expected": violation.expected,
                 "fixable": violation.fixable,
+                "severity": violation.severity,
+                "confidence": violation.confidence,
+                "explanation": violation.explanation,
             }))
             .map_err(|error| error.to_string())?,
         );
@@ -121,6 +133,8 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
             "files_fixed": report.summary.files_fixed,
             "violations_fixed": report.summary.violations_fixed,
             "suppressed_violations": report.summary.suppressed_violations,
+            "warnings": report.summary.warnings,
+            "unsupported_files": report.summary.unsupported_files,
         }))
         .map_err(|error| error.to_string())?,
     );
@@ -165,12 +179,15 @@ fn sarif(report: &Report) -> Value {
 fn sarif_result(violation: &Violation) -> Value {
     json!({
         "ruleId": violation.rule_id,
-        "level": "error",
+        "level": if violation.severity == "warning" { "note" } else { "error" },
         "message": { "text": violation.message },
         "properties": {
             "actual": violation.actual,
             "expected": violation.expected,
             "fixable": violation.fixable,
+            "severity": violation.severity,
+            "confidence": violation.confidence,
+            "explanation": violation.explanation,
         },
         "locations": [{
             "physicalLocation": {

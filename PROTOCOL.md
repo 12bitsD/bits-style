@@ -1,4 +1,4 @@
-# Bits Style Scanning Protocol V0.2
+# Bits Style Scanning Protocol V0.3
 
 本协议只负责发现文件、扫描、自动修复和输出结果。规范分为 AUTO-CORE、AUTO-PROFILE 和 REVIEW；REVIEW 不参与自动 PASS/FAIL。
 
@@ -57,6 +57,15 @@ bits style check --diff --commit 61a5793 src
 
 `status = passed` 只表示当前适配器实际执行的检查通过，不证明 REVIEW 规则或未实现的语义。
 
+## 3.1 Violation、Warning 与 Unsupported
+
+- `severity = violation`：确定违规，`check` 返回 1。
+- `severity = warning`：需要人工判断的提示，不阻断 CI。BCS003、TSX 保守格式提示和无法确认边界的 catch-all 转换属于此类。
+- `confidence = high|low`：描述判定置信度，不代替 severity。
+- `explanation`：可选的函数级说明，来自 `bits:explain(BCS003)`。
+- `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
+- `summary.warnings` 和 `summary.unsupported_files` 分别统计 warning 与 unsupported 文件。
+
 ## 4. 扫描流程
 
 ```text
@@ -107,10 +116,10 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 
 ```json
 {
-  "protocol": "bits.style.scan/v1",
-  "tool": { "name": "bits", "version": "0.2.2" },
-  "style": { "name": "Bits’s Coding Style", "version": "0.2" },
-  "status": "violation",
+  "protocol": "bits.style.scan/v2",
+  "tool": { "name": "bits", "version": "0.3.0" },
+  "style": { "name": "Bits’s Coding Style", "version": "0.3" },
+  "status": "warning",
   "coverage": {
     "executed": ["BCS001", "BCS002"],
     "not_implemented": [],
@@ -128,19 +137,25 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
       "message": "control-flow nesting exceeds three levels",
       "actual": 4,
       "expected": "<=3",
-      "fixable": false
+      "fixable": false,
+      "severity": "warning",
+      "confidence": "low",
+      "explanation": "cohesive transition; splitting would hide invariants"
     }
   ],
   "scan_errors": [],
+  "unsupported": [],
   "summary": {
     "files_discovered": 42,
     "files_scanned": 42,
-    "violations": 1,
+    "violations": 0,
+    "warnings": 1,
     "fixable_violations": 0,
     "scan_errors": 0,
     "files_fixed": 0,
     "violations_fixed": 0,
-    "suppressed_violations": 0
+    "suppressed_violations": 0,
+    "unsupported_files": 0
   }
 }
 ```
@@ -152,7 +167,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 第一行输出 run 元数据和 coverage，随后每条违规或扫描错误占一行，最后一行输出包含 `suppressed_violations` 的 summary：
 
 ```json
-{"type":"summary","status":"violation","files_scanned":42,"violations":1,"scan_errors":0,"suppressed_violations":0}
+{"type":"summary","status":"warning","files_scanned":42,"violations":0,"warnings":1,"scan_errors":0,"suppressed_violations":0,"unsupported_files":0}
 ```
 
 ## 10. 修复
@@ -171,6 +186,6 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 |---|---|
 | 0 | 扫描完成且无违规；或 report 成功生成报告 |
 | 1 | 扫描完成，存在至少一条违规 |
-| 2 | 扫描未完成，包括参数、配置、baseline、文件读取或解析错误 |
+| 2 | 扫描未完成，包括参数、配置、baseline、文件读取、解析错误或存在 unsupported 文件 |
 
 `check` 和 `report` 必须使用同一扫描结果；`fix` 必须以修复后的重新扫描结果作为最终输出。

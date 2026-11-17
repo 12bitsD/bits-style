@@ -138,7 +138,12 @@ fn unused_import_ignores_comments_and_strings() {
 #[test]
 fn catch_all_translation_is_allowed() {
     let source = "def parse(value):\n    try:\n        return int(value)\n    except Exception:\n        raise ValueError(\"invalid\")\n";
-    assert_no_rule(&scan("py", source), "BCS013");
+    let results = scan("py", source);
+    assert!(
+        results
+            .iter()
+            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
+    );
 }
 
 #[test]

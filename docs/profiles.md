@@ -23,6 +23,13 @@ Go 使用独立的语义规范 [`profiles/go.md`](../profiles/go.md)，不增加
 
 这些文件只覆盖格式底线。语义检查由 `bits` 和各语言编译器/linter 共同完成，不能仅用 formatter 宣称全部 BCS 通过。
 
+## React / TSX
+
+- 返回 JSX 的函数组件自动识别为 React 组件，允许 `PascalCase`，无需逐行豁免。
+- 展示型布尔 props 由组件 Profile 接受，不与普通业务流程布尔参数混同。
+- BCS003 仍是 warning，优先按职责和阶段拆分，不为了 48 行拆散内聚组件。
+- JSX 属性、表达式箭头函数、多行签名和 type-only import 按 Tree-sitter 节点处理；TSX 的保守格式提示为低置信 warning。
+
 ## 续行
 
 续行由对应 formatter 统一处理，不手工追求跨语言一致的对齐方式。运算符位置、参数折行和字符串处理必须在同一 Profile 内保持确定性。

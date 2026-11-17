@@ -3,12 +3,12 @@
 [![CI](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml/badge.svg)](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bits’s Coding Style V0.2 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
+Bits’s Coding Style V0.3 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
 
-- [Coding Style V0.2：BCS001–BCS015](STYLE.md)
+- [Coding Style V0.3：BCS001–BCS015](STYLE.md)
 - [Language Profiles](docs/profiles.md)
 - [Go Profile：错误、资源、并发与抽象](profiles/go.md)
-- [Scanning Protocol V0.2](PROTOCOL.md)
+- [Scanning Protocol V0.3](PROTOCOL.md)
 - [逐语言支持矩阵](docs/language-support.md)
 - [JSON Report Schema](schemas/report.schema.json)
 
@@ -20,11 +20,18 @@ Bits’s Coding Style V0.2 的公开规范与参考扫描器。规范只约束�
 
 C/C++ 保留 Tab 8 和函数换行大括号；Python/Rust 使用 4 空格；JavaScript/TypeScript/TSX 使用 2 空格、lowerCamelCase 和同行大括号。编译器、ABI、FFI 和框架强制签名可以行级豁免。
 
+## Warning、React 与 Unsupported
+
+- BCS003 的四项规模限制输出 warning，优先提示按阶段拆分；只有必须保持内聚时才使用 `bits:explain(BCS003): 职责；内聚原因；拆分风险`。
+- React 组件自动接受 PascalCase 和展示型布尔 props；JSX 区域交给 formatter，TSX 保守提示不阻断 CI。
+- `severity = violation` 才返回 1；warning 只进入报告。`report` 展示全部结果。
+- Rust/Go 等未适配文件进入 `unsupported` 列表，`check` 返回 2，不再形成“未覆盖却 passed”。
+
 ## 实现
 
 `bits` 是 Rust 编写的独立 CLI，使用 Tree-sitter 解析源码，不执行被扫描项目代码，扫描过程不访问网络。
 
-当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX。Rust 和 Go 目前只有规范 Profile，没有扫描适配。
+当前扫描适配：C、C++、Python、JavaScript、TypeScript、TSX。Rust 和 Go 目前只有规范 Profile，没有扫描适配；这些文件会进入 `unsupported` 列表，而不是形成“无文件通过”。
 
 **能解析一种语言不等于完整实现全部规则。** 函数接口、状态、错误处理和部分语义检查只支持文档列出的保守子集。逐规则状态见[支持矩阵](docs/language-support.md)。
 
@@ -117,7 +124,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-45 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+54 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
 
 ## License
 

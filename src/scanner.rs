@@ -139,14 +139,16 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
     } else {
         args.paths.clone()
     };
-    let (_root, files) = discovery::discover(&inputs, scope, args.no_ignore, &config.exclude)?;
+    let discovery = discovery::discover(&inputs, scope, args.no_ignore, &config.exclude)?;
+    let files = discovery.files;
+    let unsupported = discovery.unsupported;
     let is_fix = matches!(action, StyleCommand::Fix(_));
     let is_report = matches!(action, StyleCommand::Report(_));
 
     let mut report = if is_fix {
-        let before = scan_report(&files, args.jobs, false);
+        let before = scan_report(&files, args.jobs, false, &unsupported);
         let mut fixes = apply_fixes(&files)?;
-        let mut after = scan_report(&files, args.jobs, args.include_passed);
+        let mut after = scan_report(&files, args.jobs, args.include_passed, &unsupported);
         for fix in &mut fixes {
             fix.remaining_violations = after
                 .results
@@ -163,11 +165,18 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
         after.finish();
         after
     } else {
-        scan_report(&files, args.jobs, args.include_passed)
+        scan_report(&files, args.jobs, args.include_passed, &unsupported)
     };
     if let Some(path) = &args.baseline {
         let baseline = load_baseline(path)?;
         apply_baseline(&mut report, &baseline);
+    }
+    for fix in &mut report.fixes {
+        fix.remaining_violations = report
+            .results
+            .iter()
+            .filter(|violation| violation.file == fix.file)
+            .count();
     }
     report.finish();
 
@@ -187,7 +196,11 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
 
     if !report.scan_errors.is_empty() {
         Ok(2)
-    } else if is_report || report.results.is_empty() {
+    } else if is_report {
+        Ok(0)
+    } else if report.summary.unsupported_files > 0 {
+        Ok(2)
+    } else if report.summary.violations == 0 {
         Ok(0)
     } else {
         Ok(1)
@@ -248,11 +261,18 @@ fn apply_baseline(report: &mut Report, baseline: &Baseline) {
     report.summary.suppressed_violations = before - report.results.len();
 }
 
-fn scan_report(files: &[DiscoveredFile], jobs: usize, include_passed: bool) -> Report {
+fn scan_report(
+    files: &[DiscoveredFile],
+    jobs: usize,
+    include_passed: bool,
+    unsupported: &[String],
+) -> Report {
     let scans = scan_files(files, jobs);
     let mut report = Report::new();
     report.summary.files_discovered = files.len();
     report.summary.files_scanned = files.len();
+    report.summary.unsupported_files = unsupported.len();
+    report.unsupported = unsupported.to_vec();
     let mut passed_candidates = BTreeMap::new();
 
     for scan in &scans {
@@ -400,7 +420,8 @@ fn apply_fixes(files: &[DiscoveredFile]) -> Result<Vec<FileFix>, String> {
             _ => continue,
         };
         let analysis = analyze::analyze(file.language, &file.relative, &source, &tree);
-        let (fixed, applied_fixes) = text::fix(&source, &analysis.strings, file.language);
+        let (fixed, applied_fixes) =
+            text::fix(&source, &analysis.strings, file.language, &file.line_scope);
         let changed = fixed != source;
         if changed {
             std::fs::write(&file.absolute, fixed).map_err(|error| error.to_string())?;

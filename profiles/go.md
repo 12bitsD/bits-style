@@ -1,4 +1,4 @@
-# Bits’s Go Profile V0.2
+# Bits’s Go Profile V0.3
 
 > 正确 > 清晰 > 可修改 > 一致 > 简短
 

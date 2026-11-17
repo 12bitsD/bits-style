@@ -14,6 +14,7 @@ pub struct ImportRecord {
     pub binding: Option<String>,
     pub line: usize,
     pub column: usize,
+    pub type_only: bool,
 }
 
 #[derive(Debug, Default)]
@@ -21,6 +22,7 @@ pub struct SyntaxAnalysis {
     pub violations: Vec<Violation>,
     pub strings: Vec<Range<usize>>,
     pub comments: Vec<Range<usize>>,
+    pub jsx: Vec<Range<usize>>,
     pub imports: Vec<ImportRecord>,
     pub executed: BTreeSet<String>,
     pub partial: BTreeSet<String>,
@@ -37,6 +39,9 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         }
         if kind == "comment" {
             result.comments.push(node.byte_range());
+        }
+        if kind.starts_with("jsx_") {
+            result.jsx.push(node.byte_range());
         }
     });
     result.executed.extend(
@@ -59,8 +64,6 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
     }
     if language == Language::Python || language.is_script() || language == Language::Cpp {
         result.executed.insert("BCS013".to_owned());
-    } else {
-        result.not_applicable.insert("BCS013".to_owned());
     }
     if language == Language::Python {
         result
@@ -236,8 +239,19 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         source,
         &result.strings,
         &result.comments,
+        &result.jsx,
         &mut result.violations,
     );
+    if language == Language::Tsx {
+        for violation in result
+            .violations
+            .iter_mut()
+            .filter(|violation| violation.rule_id == "BCS009")
+        {
+            violation.severity = "warning".to_owned();
+            violation.confidence = "low".to_owned();
+        }
+    }
     result
 }
 
@@ -252,9 +266,12 @@ fn analyze_function(
 ) {
     if language != Language::Python
         && let Some(body) = node.child_by_field_name("body")
+        && is_block(body)
     {
         analyze_opening_brace(language, relative, source, node, body, true, violations);
     }
+    let react_component = function_name(node)
+        .is_some_and(|name| is_react_component(language, node, node_text(source, name)));
 
     let lines = code_line_count(source, node, comments, strings);
     if lines > 48 {
@@ -327,7 +344,7 @@ fn analyze_function(
             .collect::<BTreeSet<_>>();
         for parameter in params {
             let text = node_text(source, parameter);
-            if is_boolean_parameter(language, text) {
+            if is_boolean_parameter(language, text) && !react_component {
                 push(
                     violations,
                     relative,
@@ -362,7 +379,10 @@ fn analyze_function(
 
     if let Some(name_node) = function_name(node) {
         let name = node_text(source, name_node);
-        if !is_constructor_name(node, source, name) && !valid_function_name(language, name) {
+        if !is_constructor_name(node, source, name)
+            && !(react_component && valid_pascal_case(name))
+            && !valid_function_name(language, name)
+        {
             let expected = if language.is_script() {
                 "lowerCamelCase"
             } else {
@@ -379,6 +399,34 @@ fn analyze_function(
             );
         }
     }
+    let explanation = function_explanation(source, comments, node);
+    for violation in violations.iter_mut().filter(|violation| {
+        violation.rule_id == "BCS003"
+            && violation.file == relative
+            && violation.range.start.line == node.start_position().row + 1
+    }) {
+        violation.explanation = explanation.clone();
+    }
+}
+
+fn function_explanation(source: &str, comments: &[Range<usize>], function: Node) -> Option<String> {
+    static EXPLANATION: OnceLock<Regex> = OnceLock::new();
+    let regex =
+        EXPLANATION.get_or_init(|| Regex::new(r"bits:explain\(BCS003\):\s*(\S.*)").unwrap());
+    comments.iter().find_map(|range| {
+        let text = source.get(range.clone())?;
+        let line = source[..range.start]
+            .bytes()
+            .filter(|byte| *byte == b'\n')
+            .count()
+            + 1;
+        if line != function.start_position().row + 1 && line != function.start_position().row {
+            return None;
+        }
+        regex
+            .captures(text)
+            .map(|captures| captures[1].trim().to_owned())
+    })
 }
 
 fn code_line_count(
@@ -741,9 +789,18 @@ fn analyze_opening_brace(
     let Some(brace) = first_token(source, body, '{') else {
         return;
     };
-    let same_line = brace.row == parent.start_position().row;
+    let header_end = if function {
+        find_parameters(parent)
+            .map(|parameters| parameters.end_position().row)
+            .unwrap_or(parent.start_position().row)
+    } else {
+        parent
+            .child_by_field_name("condition")
+            .map(|condition| condition.end_position().row)
+            .unwrap_or(parent.start_position().row)
+    };
     let next_line_required = function && language.is_c_like();
-    if next_line_required && same_line {
+    if next_line_required && brace.row != header_end + 1 {
         push(
             violations,
             relative,
@@ -753,7 +810,7 @@ fn analyze_opening_brace(
             "same_line",
             "next_line",
         );
-    } else if !next_line_required && !same_line {
+    } else if !next_line_required && brace.row != header_end {
         push(
             violations,
             relative,
@@ -903,13 +960,9 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
     let catch_all = catch_text.starts_with("except:")
         || catch_text.starts_with("except Exception")
         || catch_text.contains("catch (...)");
-    let rethrow_only = statements.iter().all(|statement| {
-        let text = node_text(source, *statement).trim();
-        text == "raise"
-            || text.starts_with("raise ")
-            || text == "throw;"
-            || text.starts_with("throw ")
-    });
+    let rethrow_only = statements
+        .iter()
+        .all(|statement| matches!(node_text(source, *statement).trim(), "raise" | "throw;"));
     if catch_all && !rethrow_only {
         push(
             violations,
@@ -920,6 +973,10 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
             "unrestricted_catch_all",
             "rethrow_or_translate",
         );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "warning".to_owned();
+            violation.confidence = "low".to_owned();
+        }
     }
     for statement in statements {
         let text = node_text(source, statement).trim();
@@ -1024,7 +1081,7 @@ fn analyze_import(
 ) {
     let text = node_text(source, node).trim();
     let masked = mask_ranges(source, &result.strings, &result.comments);
-    let mut record = |specifier: String, binding: Option<String>| {
+    let mut record = |specifier: String, binding: Option<String>, type_only: bool| {
         if binding.as_deref() == Some("*") || text.contains("import *") {
             push(
                 &mut result.violations,
@@ -1055,6 +1112,7 @@ fn analyze_import(
             binding,
             line: node.start_position().row + 1,
             column: node.start_position().column + 1,
+            type_only,
         });
     };
 
@@ -1070,13 +1128,13 @@ fn analyze_import(
                         .trim()
                         .trim_matches(|character| matches!(character, '(' | ')' | '\\'));
                     let binding = name.split(" as ").last().unwrap_or(name).trim();
-                    record(module.to_owned(), Some(binding.to_owned()));
+                    record(module.to_owned(), Some(binding.to_owned()), false);
                 }
             } else {
                 let imports = text.trim_start_matches("import ");
                 for name in imports.split(',') {
                     let binding = name.split(" as ").last().unwrap_or(name).trim();
-                    record(name.trim().to_owned(), Some(binding.to_owned()));
+                    record(name.trim().to_owned(), Some(binding.to_owned()), false);
                 }
             }
         }
@@ -1090,34 +1148,85 @@ fn analyze_import(
                 })
                 .unwrap_or("")
                 .to_owned();
-            let bindings = if text.contains("import *") {
-                vec!["*".to_owned()]
-            } else {
-                text.split_once("import ")
-                    .and_then(|parts| parts.1.split_once(" from "))
-                    .map_or_else(Vec::new, |parts| {
-                        parts
-                            .0
-                            .trim_matches(|character| matches!(character, '{' | '}' | ' '))
-                            .split(',')
-                            .map(|name| name.split(" as ").last().unwrap_or(name).trim().to_owned())
-                            .filter(|name| !name.is_empty())
-                            .collect()
-                    })
-            };
+            let clause = text
+                .split_once("import ")
+                .and_then(|parts| parts.1.split_once(" from "))
+                .map(|parts| parts.0)
+                .unwrap_or("");
+            let bindings = parse_js_bindings(clause);
             if bindings.is_empty() {
-                record(specifier, None);
+                record(specifier, None, false);
             } else {
-                for binding in bindings {
-                    record(specifier.clone(), Some(binding));
+                for (binding, type_only) in bindings {
+                    record(specifier.clone(), Some(binding), type_only);
                 }
             }
         }
         _ => {
             let specifier = text.split(['"', '<', '>']).nth(1).unwrap_or("").to_owned();
-            record(specifier, None);
+            record(specifier, None, false);
         }
     }
+}
+
+fn parse_js_bindings(clause: &str) -> Vec<(String, bool)> {
+    let clause = clause.trim();
+    let (clause, whole_type_only) = clause
+        .strip_prefix("type ")
+        .map_or((clause, false), |rest| (rest.trim(), true));
+    let mut parts = Vec::new();
+    let mut depth = 0_usize;
+    let mut current = String::new();
+    for character in clause.chars() {
+        match character {
+            '{' => {
+                depth += 1;
+                current.push(character);
+            }
+            '}' => {
+                depth = depth.saturating_sub(1);
+                current.push(character);
+            }
+            ',' if depth == 0 => {
+                parts.push(std::mem::take(&mut current));
+            }
+            _ => current.push(character),
+        }
+    }
+    parts.push(current);
+
+    let mut bindings = Vec::new();
+    for part in parts {
+        let part = part.trim();
+        if part.is_empty() {
+            continue;
+        }
+        if part.starts_with('*') {
+            bindings.push(("*".to_owned(), whole_type_only));
+            continue;
+        }
+        let mut candidates = Vec::new();
+        if let Some((prefix, inside)) = part.split_once('{') {
+            if !prefix.trim().is_empty() {
+                candidates.push(prefix.trim());
+            }
+            if let Some((inside, _)) = inside.rsplit_once('}') {
+                candidates.extend(inside.split(',').map(str::trim));
+            }
+        } else {
+            candidates.push(part);
+        }
+        for candidate in candidates {
+            let (candidate, item_type_only) = candidate
+                .strip_prefix("type ")
+                .map_or((candidate, false), |rest| (rest.trim(), true));
+            let binding = candidate.split(" as ").last().unwrap_or(candidate).trim();
+            if !binding.is_empty() {
+                bindings.push((binding.to_owned(), whole_type_only || item_type_only));
+            }
+        }
+    }
+    bindings
 }
 
 fn analyze_type(
@@ -1210,6 +1319,26 @@ fn analyze_variable(
     }
 
     if language == Language::Python && node.kind() == "assignment" {
+        if let Some(target) = node.child_by_field_name("left") {
+            let mut names = BTreeSet::new();
+            collect_pattern_identifiers(source, target, &mut names);
+            for name in names {
+                if global && valid_upper_snake(&name) {
+                    continue;
+                }
+                if !valid_lower_snake(&name) {
+                    push(
+                        violations,
+                        relative,
+                        target,
+                        "BCS010",
+                        "variable name does not match the language profile",
+                        name,
+                        "lower_snake_case",
+                    );
+                }
+            }
+        }
         return;
     }
     if let Some(name) = node
@@ -1318,6 +1447,7 @@ fn analyze_spacing(
     source: &str,
     strings: &[Range<usize>],
     comments: &[Range<usize>],
+    jsx: &[Range<usize>],
     violations: &mut Vec<Violation>,
 ) {
     let masked = mask_ranges(source, strings, comments);
@@ -1327,11 +1457,24 @@ fn analyze_spacing(
     static BINARY: OnceLock<Regex> = OnceLock::new();
     let keyword = KEYWORD.get_or_init(|| Regex::new(r"\b(if|switch|for|while|catch)\(").unwrap());
     let call = CALL.get_or_init(|| Regex::new(r"\b([A-Za-z_][A-Za-z0-9_]*)[ \t]+\(").unwrap());
-    let inner = INNER.get_or_init(|| Regex::new(r"\([ \t]+|[ \t]+\)").unwrap());
-    let binary = BINARY.get_or_init(|| Regex::new(r"\S(==|!=|<=|>=|&&|\|\||=)\S").unwrap());
+    let inner = INNER.get_or_init(|| Regex::new(r"\([ \t]+[^()\n]*[ \t]+\)").unwrap());
+    let binary = BINARY.get_or_init(|| Regex::new(r"(\S)(==|!=|<=|>=|&&|\|\||=)(\S)").unwrap());
+    let mut line_start = 0;
     for (index, line) in masked.lines().enumerate() {
         let line_number = index + 1;
+        let line_end = line_start + line.len() + 1;
+        if jsx
+            .iter()
+            .any(|range| range.start < line_end && range.end > line_start)
+        {
+            line_start = line_end;
+            continue;
+        }
         if let Some(found) = keyword.find(line) {
+            if found.start() > 0 && line[..found.start()].ends_with('.') {
+                line_start = line_end;
+                continue;
+            }
             violations.push(Violation::new(
                 "BCS009",
                 relative,
@@ -1355,6 +1498,10 @@ fn analyze_spacing(
                     | "sizeof"
                     | "typeof"
                     | "alignof"
+                    | "async"
+                    | "await"
+                    | "function"
+                    | "new"
             ) {
                 continue;
             }
@@ -1381,17 +1528,19 @@ fn analyze_spacing(
                 false,
             ));
         }
-        for found in binary.find_iter(line) {
-            if found.as_str().contains("==") && !found.as_str().contains('=') {
+        for found in binary.captures_iter(line) {
+            let left = found.get(1).map_or("", |capture| capture.as_str());
+            let right = found.get(3).map_or("", |capture| capture.as_str());
+            if left.chars().all(is_operator_character) || right.chars().all(is_operator_character) {
                 continue;
             }
             violations.push(Violation::new(
                 "BCS009",
                 relative,
                 line_number,
-                found.start() + 1,
+                found.get(0).map_or(0, |capture| capture.start()) + 1,
                 "binary operators must have one space on each side",
-                found.as_str(),
+                found.get(0).map_or("", |capture| capture.as_str()),
                 "left op right",
                 false,
             ));
@@ -1415,7 +1564,29 @@ fn analyze_spacing(
                 false,
             ));
         }
+        line_start = line_end;
     }
+}
+
+fn is_operator_character(character: char) -> bool {
+    matches!(
+        character,
+        '=' | '!'
+            | '<'
+            | '>'
+            | '+'
+            | '-'
+            | '*'
+            | '/'
+            | '%'
+            | '&'
+            | '|'
+            | '^'
+            | '?'
+            | '~'
+            | ':'
+            | '.'
+    )
 }
 
 fn mask_ranges(source: &str, strings: &[Range<usize>], comments: &[Range<usize>]) -> String {
@@ -1661,6 +1832,19 @@ fn function_name(function: Node) -> Option<Node> {
     }
 }
 
+fn is_react_component(language: Language, function: Node, name: &str) -> bool {
+    if !language.is_script() || !valid_pascal_case(name) {
+        return false;
+    }
+    let mut has_jsx = false;
+    visit(function, &mut |node| {
+        if node.kind().starts_with("jsx_") {
+            has_jsx = true;
+        }
+    });
+    has_jsx
+}
+
 fn is_constructor_name(function: Node, source: &str, name: &str) -> bool {
     if function.kind() == "method_definition" && name == "constructor" {
         return true;
@@ -1798,6 +1982,8 @@ fn push_function(
             node.end_position().column + 1,
         ),
     };
+    violation.severity = "warning".to_owned();
+    violation.confidence = "low".to_owned();
     violations.push(violation);
 }
 
@@ -1853,6 +2039,9 @@ pub fn coverage(analysis: &SyntaxAnalysis) -> Coverage {
 }
 
 pub fn dependency_path(import: &ImportRecord) -> Option<String> {
+    if import.type_only {
+        return None;
+    }
     let specifier = import.specifier.trim();
     if specifier.starts_with('.') || specifier.ends_with(".h") {
         Some(specifier.to_owned())
