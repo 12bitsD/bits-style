@@ -442,3 +442,15 @@ fn git_untracked(
         .map(str::to_owned)
         .collect())
 }
+
+#[cfg(test)]
+mod tests {
+    use super::decode_git_path;
+
+    #[test]
+    fn decodes_quoted_git_paths() {
+        assert_eq!(decode_git_path("\"b/a\\\"b.py\""), "b/a\"b.py");
+        assert_eq!(decode_git_path("\"b/a\\nb.py\""), "b/a\nb.py");
+        assert_eq!(decode_git_path("b/plain.py"), "b/plain.py");
+    }
+}
