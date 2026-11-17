@@ -93,7 +93,7 @@ bits style report . --output bits-baseline.json
 bits style check . --baseline bits-baseline.json
 ```
 
-baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规，行列变化不会单独产生新违规。新文件不参与 baseline，必须全量通过。`summary.suppressed_violations` 记录被隐藏的存量违规数量。
+baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规，行列变化不会单独产生新违规。每条基线记录只消费一次，重复违规按记录数量匹配，新增的同指纹违规不会被已有的一条记录吞掉。新文件不参与 baseline，必须全量通过。`summary.suppressed_violations` 记录被隐藏的存量违规数量。
 
 ## 7. 文本输出
 
@@ -108,7 +108,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v1",
-  "tool": { "name": "bits", "version": "0.2.1" },
+  "tool": { "name": "bits", "version": "0.2.2" },
   "style": { "name": "Bits’s Coding Style", "version": "0.2" },
   "status": "violation",
   "coverage": {

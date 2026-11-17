@@ -215,29 +215,35 @@ fn apply_baseline(report: &mut Report, baseline: &Baseline) {
         .iter()
         .map(|result| result.file.as_str())
         .collect();
-    let fingerprints: BTreeSet<(String, String, String, String)> = baseline
-        .results
-        .iter()
-        .map(|result| {
-            (
+    let mut fingerprints: BTreeMap<(String, String, String, String), usize> = BTreeMap::new();
+    for result in &baseline.results {
+        *fingerprints
+            .entry((
                 result.rule_id.clone(),
                 result.file.clone(),
                 result.message.clone(),
                 result.actual.to_string(),
-            )
-        })
-        .collect();
+            ))
+            .or_default() += 1;
+    }
     let before = report.results.len();
     report.results.retain(|result| {
         if !files.contains(result.file.as_str()) {
             return true;
         }
-        !fingerprints.contains(&(
+        let key = (
             result.rule_id.clone(),
             result.file.clone(),
             result.message.clone(),
             result.actual.to_string(),
-        ))
+        );
+        match fingerprints.get_mut(&key) {
+            Some(count) if *count > 0 => {
+                *count -= 1;
+                false
+            }
+            _ => true,
+        }
     });
     report.summary.suppressed_violations = before - report.results.len();
 }
@@ -310,8 +316,17 @@ fn scan_files(files: &[DiscoveredFile], jobs: usize) -> Vec<FileScan> {
             handles.push(scope.spawn(move || chunk.iter().map(scan_file).collect::<Vec<_>>()));
         }
         for handle in handles {
-            if let Ok(mut scans) = handle.join() {
-                output.append(&mut scans);
+            match handle.join() {
+                Ok(mut scans) => output.append(&mut scans),
+                Err(_) => output.push(FileScan {
+                    relative: "<scanner>".to_owned(),
+                    errors: vec![ScanError {
+                        file: "<scanner>".to_owned(),
+                        error: "worker_panic".to_owned(),
+                        message: "scan worker panicked".to_owned(),
+                    }],
+                    ..FileScan::default()
+                }),
             }
         }
     });
@@ -405,12 +420,16 @@ fn filter_diff_violations(scans: &[FileScan], violations: &mut Vec<Violation>) {
         .iter()
         .map(|scan| (scan.relative.as_str(), &scan.line_scope))
         .collect();
+    let has_diff = scans
+        .iter()
+        .any(|scan| matches!(scan.line_scope, LineScope::Added(_)));
     violations.retain(|violation| match scopes.get(violation.file.as_str()) {
         Some(LineScope::Added(lines)) => lines
             .range(violation.range.start.line..=violation.range.end.line)
             .next()
             .is_some(),
-        _ => true,
+        Some(LineScope::WholeFile) => true,
+        None => !has_diff,
     });
 }
 

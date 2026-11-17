@@ -125,9 +125,18 @@ fn finalize_files(
         globs.add(Glob::new(pattern).map_err(|error| error.to_string())?);
     }
     let globs = globs.build().map_err(|error| error.to_string())?;
-    files.retain(|file| !globs.is_match(&file.relative));
+    files.retain(|file| !globs.is_match(&file.relative) && !excluded_directory(&file.relative));
     files.sort_by(|a, b| a.relative.cmp(&b.relative));
     Ok((root, files))
+}
+
+fn excluded_directory(relative: &str) -> bool {
+    relative.split('/').any(|component| {
+        matches!(
+            component,
+            ".git" | "node_modules" | "target" | "dist" | "build" | ".venv" | "venv"
+        )
+    })
 }
 
 fn discovery_root(inputs: &[PathBuf]) -> Result<PathBuf, String> {

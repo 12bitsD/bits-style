@@ -11,7 +11,7 @@
 
 | 规则 | C / C++ | Python | JavaScript / TypeScript / TSX | 当前判定边界 |
 |---|---|---|---|---|
-| `BCS001` | supported | supported | supported | C/C++ Tab 8；Python 4 Space；JS/TS 2 Space；行尾空白和末尾换行 |
+| `BCS001` | partial | partial | partial | 禁止混用及错误缩进字符，处理行尾空白和末尾换行；续行与连续块宽度未完整判定 |
 | `BCS002` | partial | partial | partial | 默认 80 列；字符串字面量保守识别用户文本、日志和 URL；续行由 Profile formatter 决定 |
 | `BCS003` | partial | partial | partial | 非空非注释代码行、嵌套、局部绑定和圈复杂度；扁平 case 豁免；复杂声明可能只覆盖部分绑定 |
 | `BCS004` | partial | partial | partial | 参数数量、布尔参数和 C/C++ 参数名；外部签名使用行级豁免 |
@@ -21,9 +21,9 @@
 | `BCS008` | partial | not_applicable | partial | C/C++ case 对齐 switch；JS/TS 使用一级缩进；fallthrough 采用保守检查 |
 | `BCS009` | partial | partial | partial | 常见关键字、调用、括号和二元运算符空格；其余交给 Profile formatter |
 | `BCS010` | partial | partial | partial | C/Python 使用 lower_snake_case；JS/TS 使用 lowerCamelCase；类型 PascalCase、常量 UPPER_SNAKE_CASE |
-| `BCS011` | partial | partial | partial | 常见可变全局、直接环境读取、参数重赋值和部分参数遮蔽；完整作用域与全部隐藏输入不自动判定 |
+| `BCS011` | partial | partial | partial | 常见可变全局及容器常量、直接环境读取、直接参数重赋值和部分参数遮蔽；完整作用域与全部隐藏输入不自动判定 |
 | `BCS012` | partial | not_applicable | not_applicable | C/C++ 宏、inline 和函数内条件编译；宏的全部调用方语义不完整 |
-| `BCS013` | C++ partial；C not_applicable | partial | partial | 空 catch/except、常见伪造成功和 catch-all；复杂业务错误语义属于 REVIEW |
+| `BCS013` | C++ partial；C 异常语法 N/A、非 void 返回值检查未实现 | partial | partial | 空 catch/except、常见伪造成功、catch-all 重抛或边界转换；复杂业务错误语义属于 REVIEW |
 | `BCS014` | partial | partial | partial | 通配符/简单未使用导入、相对依赖环、不可达代码和疑似注释旧代码；不是完整语义可达性分析 |
 | `BCS015` | supported | supported | supported | TODO 格式、行级豁免格式、editor modeline；注释内容属于 REVIEW |
 

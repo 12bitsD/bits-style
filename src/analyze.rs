@@ -451,9 +451,9 @@ fn analyze_parameter_mutability(
         ) && let Some(target) = node
             .child_by_field_name("left")
             .or_else(|| node.child_by_field_name("target"))
-            && let Some(name) = find_named_child_kind(target, "identifier")
+            && target.kind() == "identifier"
         {
-            let name = node_text(source, name);
+            let name = node_text(source, target);
             if parameters.contains(name) {
                 push(
                     violations,
@@ -773,6 +773,9 @@ fn analyze_switch(
     node: Node,
     violations: &mut Vec<Violation>,
 ) {
+    if let Some(body) = node.child_by_field_name("body") {
+        analyze_opening_brace(language, relative, source, node, body, false, violations);
+    }
     let switch_column = node.start_position().column;
     let case_column = if language.is_script() {
         switch_column + 2
@@ -900,9 +903,13 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
     let catch_all = catch_text.starts_with("except:")
         || catch_text.starts_with("except Exception")
         || catch_text.contains("catch (...)");
-    let rethrow_only = statements
-        .iter()
-        .all(|statement| matches!(node_text(source, *statement).trim(), "raise" | "throw;"));
+    let rethrow_only = statements.iter().all(|statement| {
+        let text = node_text(source, *statement).trim();
+        text == "raise"
+            || text.starts_with("raise ")
+            || text == "throw;"
+            || text.starts_with("throw ")
+    });
     if catch_all && !rethrow_only {
         push(
             violations,
@@ -1016,6 +1023,7 @@ fn analyze_import(
     result: &mut SyntaxAnalysis,
 ) {
     let text = node_text(source, node).trim();
+    let masked = mask_ranges(source, &result.strings, &result.comments);
     let mut record = |specifier: String, binding: Option<String>| {
         if binding.as_deref() == Some("*") || text.contains("import *") {
             push(
@@ -1030,7 +1038,7 @@ fn analyze_import(
         }
         if let Some(name) = binding.as_deref()
             && name != "*"
-            && count_identifier(source, name) <= 1
+            && count_identifier(&masked, name) <= 1
         {
             push(
                 &mut result.violations,
@@ -1164,7 +1172,18 @@ fn analyze_variable(
         let mutable = match language {
             Language::Python => {
                 let name = text.split('=').next().unwrap_or("").trim();
-                node.kind() == "assignment" && !name.starts_with('_') && !valid_upper_snake(name)
+                let value = text
+                    .split_once('=')
+                    .map(|parts| parts.1.trim())
+                    .unwrap_or("");
+                let mutable_literal = value.starts_with('[')
+                    || value.starts_with('{')
+                    || ["list(", "dict(", "set(", "bytearray("]
+                        .iter()
+                        .any(|prefix| value.starts_with(prefix));
+                node.kind() == "assignment"
+                    && !name.starts_with('_')
+                    && (!valid_upper_snake(name) || mutable_literal)
             }
             _ if language.is_script() => {
                 matches!(node.kind(), "lexical_declaration" | "variable_declaration")

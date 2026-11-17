@@ -184,8 +184,13 @@ pub fn fix(
             output.push_str(&normalized);
             let rest = &content[leading_len..];
             let trimmed = rest.trim_end_matches([' ', '\t']);
-            trailing_fixes += usize::from(trimmed.len() != rest.len());
-            output.push_str(trimmed);
+            let trailing_start = offset + leading_len + trimmed.len();
+            if inside_any(strings, trailing_start) {
+                output.push_str(rest);
+            } else {
+                trailing_fixes += usize::from(trimmed.len() != rest.len());
+                output.push_str(trimmed);
+            }
         }
         output.push_str(ending);
         offset += line.len();
