@@ -4,10 +4,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 pub const PROTOCOL_VERSION: &str = "bits.style.scan/v2";
-pub const STYLE_VERSION: &str = "0.3";
-pub const RULE_IDS: [&str; 15] = [
+pub const STYLE_VERSION: &str = "0.4";
+pub const RULE_IDS: [&str; 16] = [
     "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007", "BCS008", "BCS009",
-    "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015",
+    "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015", "BCS016",
 ];
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
@@ -52,6 +52,10 @@ pub struct Violation {
     pub confidence: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub explanation: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub category: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub obligation: Option<String>,
 }
 
 fn default_severity() -> String {
@@ -85,12 +89,22 @@ impl Violation {
             severity: "violation".to_owned(),
             confidence: "high".to_owned(),
             explanation: None,
+            category: None,
+            obligation: None,
         }
     }
 
     pub fn mark_high_confidence_violation(&mut self) {
         self.severity = "violation".to_owned();
         self.confidence = "high".to_owned();
+        self.obligation = Some("refactor".to_owned());
+    }
+
+    pub fn mark_taste_warning(&mut self, category: &str) {
+        self.severity = "warning".to_owned();
+        self.confidence = "high".to_owned();
+        self.category = Some(category.to_owned());
+        self.obligation = Some("prove_minimalism".to_owned());
     }
 }
 
@@ -121,6 +135,8 @@ pub struct Summary {
     pub suppressed_violations: usize,
     pub warnings: usize,
     pub unsupported_files: usize,
+    #[serde(default)]
+    pub proves: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -229,6 +245,11 @@ impl Report {
             .results
             .iter()
             .filter(|v| v.severity == "warning")
+            .count();
+        self.summary.proves = self
+            .results
+            .iter()
+            .filter(|v| v.obligation.as_deref() == Some("critic_review"))
             .count();
         self.summary.fixable_violations = self.results.iter().filter(|v| v.fixable).count();
         self.summary.scan_errors = self.scan_errors.len();

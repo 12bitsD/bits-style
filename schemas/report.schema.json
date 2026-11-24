@@ -19,7 +19,7 @@
       "required": ["name", "version"],
       "properties": {
         "name": { "type": "string" },
-        "version": { "const": "0.3" }
+        "version": { "const": "0.4" }
       }
     },
     "status": { "enum": ["passed", "violation", "warning", "unsupported", "error"] },
@@ -55,7 +55,9 @@
           "fixable": { "type": "boolean" },
           "severity": { "enum": ["violation", "warning"] },
           "confidence": { "enum": ["high", "low"] },
-          "explanation": { "type": "string" }
+          "explanation": { "type": "string" },
+          "category": { "enum": ["level-purity", "control-flow", "state-gain", "symmetry", "role"] },
+          "obligation": { "enum": ["refactor", "prove_minimalism", "critic_review"] }
         }
       }
     },
@@ -96,7 +98,8 @@
         "violations_fixed": { "type": "integer", "minimum": 0 },
         "suppressed_violations": { "type": "integer", "minimum": 0 },
         "warnings": { "type": "integer", "minimum": 0 },
-        "unsupported_files": { "type": "integer", "minimum": 0 }
+        "unsupported_files": { "type": "integer", "minimum": 0 },
+        "proves": { "type": "integer", "minimum": 0 }
       }
     },
     "fixes": { "type": "array" },
@@ -106,7 +109,7 @@
     }
   },
   "$defs": {
-    "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-5])$", "type": "string" },
+    "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-6])$", "type": "string" },
     "ruleList": {
       "type": "array",
       "items": { "$ref": "#/$defs/ruleId" },

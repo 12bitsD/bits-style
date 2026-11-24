@@ -499,7 +499,7 @@ fn bcs003_text_report_prompts_for_concrete_explanation() {
     let output = bits(&["style", "check", plain.to_str().unwrap()]);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains(
-        "hint: split by responsibility, or add bits:explain(BCS003): <mechanism>; <shared invariant>; <splitting risk>"
+        "hint: prefer refactoring; if unavoidable, register bits:prove(BCS003[, test=name]): <minimal reason>; <concrete risk> (budget: 1 per change)"
     ));
 
     let explained = directory.path().join("explained.py");
@@ -513,7 +513,156 @@ fn bcs003_text_report_prompts_for_concrete_explanation() {
     let output = bits(&["style", "check", explained.to_str().unwrap()]);
     let text = String::from_utf8_lossy(&output.stdout);
     assert!(text.contains("explanation: state transition; cursor and checksum mutate together; splitting splits the lock"));
-    assert!(!text.contains("hint: split by responsibility"));
+    assert!(!text.contains("hint: prefer refactoring"));
+}
+
+#[test]
+fn bcs016_detects_only_exhaustive_pure_branch_head_duplication() {
+    let duplicated = "async def run(command: str, h: object) -> int:\n    if command == \"a\":\n        await h.check()\n        return 1\n    elif command == \"b\":\n        await h.check()\n        return 2\n    else:\n        await h.check()\n        return 3\n";
+    let results = scan("py", duplicated);
+    assert_eq!(results.len(), 1, "{results:#?}");
+    assert_eq!(results[0]["rule_id"], "BCS016");
+    assert_eq!(results[0]["severity"], "warning");
+    assert_eq!(results[0]["category"], "symmetry");
+    assert_eq!(results[0]["obligation"], "prove_minimalism");
+
+    let js = "function run(mode) {\n  if (mode === 1) {\n    setup();\n    return 1;\n  } else {\n    setup();\n    return 2;\n  }\n}\n";
+    let results = scan("js", js);
+    assert!(results.iter().any(|r| r["rule_id"] == "BCS016"));
+
+    let no_else = "def run(command: str, h: object) -> None:\n    if command == \"a\":\n        h.check()\n    elif command == \"b\":\n        h.check()\n";
+    assert_no_rule(&scan("py", no_else), "BCS016");
+
+    let impure = "def run(mode: object, h: object) -> int:\n    if next_mode() == 1:\n        h.check()\n        return 1\n    else:\n        h.check()\n        return 2\n";
+    assert_no_rule(&scan("py", impure), "BCS016");
+
+    let distinct = "def run(mode: int, h: object) -> int:\n    if mode == 1:\n        h.start()\n        return 1\n    else:\n        h.stop()\n        return 2\n";
+    assert_no_rule(&scan("py", distinct), "BCS016");
+}
+
+#[test]
+fn python_fstring_in_loop_does_not_trigger_bcs007_and_unused_allow_fails() {
+    let source = "# bits:allow(BCS007): Python has no brace blocks\ndef show(items: list[int]) -> None:\n    for item in items:\n        print(f\"{item}\")\n";
+    let results = scan("py", source);
+    assert_no_rule(&results, "BCS007");
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS015"
+            && r["message"] == "unused bits:allow must be deleted"
+            && r["severity"] == "violation"
+    }));
+}
+
+#[test]
+fn bits_prove_marks_warnings_for_critic_and_rejects_hard_violations() {
+    let directory = tempfile::tempdir().unwrap();
+    let long_fn = directory.path().join("long.py");
+    let body = "    cursor += 1\n".repeat(49);
+    fs::write(
+        &long_fn,
+        format!(
+            "# bits:prove(BCS003, test=test_lock): shared lock; split unlocks\ndef step() -> int:\n    cursor = 0\n{body}    return cursor\n"
+        ),
+    )
+    .unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        long_fn.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    let report = json(&output);
+    assert_eq!(report["summary"]["violations"], 0);
+    assert_eq!(report["summary"]["proves"], 1);
+    assert_eq!(report["results"][0]["obligation"], "critic_review");
+    assert!(
+        report["results"][0]["explanation"]
+            .as_str()
+            .unwrap()
+            .contains("[test=test_lock]")
+    );
+
+    let nested = "// bits:prove(BCS003): cohesive; splitting risks state\nfunction bad(value) {\n  if (value) {\n    for (const item of value) {\n      while (item) {\n        if (item) {\n          return 1;\n        }\n      }\n    }\n  }\n  return 0;\n}\n";
+    let results = scan("js", nested);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS015" && r["message"] == "bits:prove cannot waive a hard violation"
+    }));
+    assert!(
+        results
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS003" && r["severity"] == "violation" })
+    );
+
+    let malformed = "// bits:prove(BCS010): single part only\nfunction ok() {\n  return 1;\n}\n";
+    assert!(scan("js", malformed).iter().any(|r| {
+        r["rule_id"] == "BCS015"
+            && r["message"] == "proof must state minimal form and concrete risk in two parts"
+    }));
+
+    let unused = "// bits:prove(BCS010): legacy name; framework requires it\nfunction ok() {\n  return 1;\n}\n";
+    assert!(scan("js", unused).iter().any(|r| {
+        r["rule_id"] == "BCS015" && r["message"] == "unused bits:prove must be deleted"
+    }));
+}
+
+#[test]
+fn diff_mode_enforces_single_new_prove_budget() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(root.join("README.md"), "# demo\n").unwrap();
+    init_diff_repo(root);
+    let body = "    value += 1\n".repeat(49);
+    let make_fn = |name: &str| {
+        format!(
+            "# bits:prove(BCS003): atomic steps; split duplicates guards\ndef {name}() -> int:\n    value = 0\n{body}    return value\n"
+        )
+    };
+    fs::write(root.join("one.py"), make_fn("one")).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{:#?}", json(&output));
+
+    fs::write(root.join("two.py"), make_fn("two")).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    let report = json(&output);
+    assert!(report["results"].as_array().unwrap().iter().any(|r| {
+        r["rule_id"] == "BCS015"
+            && r["message"] == "new bits:prove annotations exceed the per-change budget of 1"
+    }));
+}
+
+#[test]
+fn defaulted_and_keyword_only_bools_are_not_boolean_traps() {
+    let options = "def fetch(url: str, *, follow_redirects: bool = False, trust_env: bool = True) -> str:\n    if follow_redirects and trust_env:\n        return url\n    return url\n";
+    assert_no_rule(&scan("py", options), "BCS004");
+
+    let positional = "def run(enabled: bool) -> bool:\n    return enabled\n";
+    assert!(
+        scan("py", positional)
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS004" && r["severity"] == "violation" })
+    );
+}
+
+#[test]
+fn python_qualified_type_aliases_and_module_logger_are_not_mutable_globals() {
+    let source = "import logging\nimport typing\n\nlogger = logging.getLogger(\"httpx\")\nEventHook = typing.Callable[..., typing.Any]\n";
+    assert_no_rule(&scan("py", source), "BCS011");
 }
 
 fn init_diff_repo(root: &Path) {

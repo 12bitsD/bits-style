@@ -1,6 +1,6 @@
 ---
 name: bits-style
-description: Apply Bits’s Coding Style safely in any repository. Use when adopting the style, reviewing or refactoring changed code, creating a baseline, enabling diff-only or CI checks, or using bits:allow/bits:explain without turning the checker into a full-repo mechanical rewrite.
+description: Apply Bits’s Coding Style safely in any repository. Use when adopting the style, reviewing or refactoring changed code, creating a baseline, enabling diff-only or CI checks, or using bits:allow/bits:prove without turning the checker into a full-repo mechanical rewrite.
 ---
 
 # Bits’s Coding Style
@@ -24,7 +24,7 @@ Canonical references:
 
 Resolve these before acting:
 
-- `bits` executable and its version. The current integration version is `v0.3.6`.
+- `bits` executable and its version. The current integration version is `v0.4.0`.
 - Repository root and the Git revision used for comparisons, normally `origin/main`.
 - Whether this is first adoption, incremental work, or CI hard-gate adoption.
 - Existing language formatters and tests. Bits supplements them.
@@ -77,17 +77,14 @@ For semantic violations, prefer the smallest change that removes the actual prob
 - Preserve resource lifetimes and ownership boundaries when splitting logic.
 - Keep related stages together when moving them would add context objects or hidden state.
 
-For `BCS003`, prefer splitting by responsibility only when that reduces cognitive load. Use `bits:explain(BCS003)` only when the function must remain cohesive:
+Warnings do not require comments. Follow this resolution order: **delete redundant layers → replace branches with data/schema/handler binding → split by responsibility → register at most one `bits:prove`**.
 
-```text
-bits:explain(BCS003): <concrete mechanism>; <shared state/resource/ordering invariant>; <concrete splitting risk>
-```
+Distinguish the two annotations strictly:
 
-Reject boilerplate explanations such as `single validation table`, `too complex`, or `split scatters rules`. `bits:explain` documents size warnings; it does not waive nesting or cyclomatic-complexity violations. If the logic can be replaced by a declarative schema/table or deleted, do that instead of explaining it.
+- `bits:allow(<rule>): <reason>` — ONLY for external hard contracts (ABI, FFI, framework signatures, external naming, pure data tables). Unused `bits:allow` is a hard error (`BCS015`) and must be deleted.
+- `bits:prove(<rule>[, test=<test_name>]): <why this is the minimal form>; <concrete risk if removed/simplified>` — scarce tech-debt registration for warnings only. It never waives hard violations, allows at most **1 new proof per diff**, and must be verified by an **independent Critic or human** (never self-approved by the author agent). High-risk boundary claims must point to a real test. Unused `bits:prove` is a hard error.
 
-For pass-through layers, check whether parameter validation duplicates a downstream SDK/model/service contract. Keep only invariants owned by this module (reserved keys, auth, structural envelope); let downstream validation reject invalid provider parameters and wrap/forward the original error at the boundary. When local validation or normalization is required, prefer a declarative schema over string-key `if/elif` chains.
-
-Use `bits:allow(<rule>): <reason>` only for a real contract or low-confidence case, with the rule id and a concrete reason. Do not add blanket suppressions.
+For pass-through layers, keep only invariants owned by this module (reserved keys, auth, structural envelope); let downstream validation reject invalid provider parameters and wrap/forward the original error at the boundary. When a framework (e.g. `argparse`) has already parsed a structure, bind handlers directly (e.g. `set_defaults(handler=...)`) instead of re-branching on command strings.
 
 ### 4. Verify behavior and coverage
 
@@ -125,6 +122,28 @@ bits style check .
 
 Start with high-confidence violations. Do not require the entire repository to be warning-free.
 
+## L2 Taste Review (Independent Critic)
+
+Use the four elegance dimensions as focused questions. Scope strictly to:
+
+1. Functions in the current diff with substantial edits or added branches.
+2. Functions flagged with L1 warnings (`BCS003`, `BCS016`, etc.) or carrying `bits:prove`.
+
+Do not review untouched files. **If no concrete issue is found, stay silent** — output no praise, summaries of good code, or generic advice.
+
+Ask these four questions on each target function:
+
+- **Level purity**: Do a few lines suddenly drop to a lower abstraction level than the surrounding orchestration (e.g. hand-building dicts/imports inside a lifecycle dispatcher)?
+- **Control-flow flatness**: Are branches making real business decisions, or simulating a lookup table, re-dispatching what a framework already parsed, or only reformatting the same error text?
+- **Information gain**: Which downstream decision consumes each parsed/validated value? If data is validated and immediately passed unchanged to an IO boundary that already validates it, or parsed JSON falls back to raw text everywhere, delete the mirror check or speculative parser.
+- **Symmetry**: Is the same setup call pasted at the head of mutually exclusive branches, or are sibling features handled with inconsistent control flow?
+
+When reviewing a `bits:prove` (`obligation = critic_review`), act as an independent judge with no loyalty to the author's rationale:
+
+- Verify the named `test=` exists and actually exercises the claimed failure scenario.
+- Ask: "If we deleted this layer or hoisted/collapsed this shape, would any observable behavior or invariant actually break?"
+- Reject vague rationale (`single table`, `keep API`, `cohesive logic`) and request refactoring.
+
 ## Agent completion contract
 
 A change is complete only when all are true:
@@ -145,6 +164,7 @@ bits style check --diff --commit origin/main
 bits style fix --diff --commit origin/main
 bits style check --baseline bits-baseline.json
 bits style report src --format sarif
+bits bench --offline
 ```
 
 `--commit` accepts a SHA, branch, tag or `HEAD~n`. `check` returns 1 for violations, 2 for scan/unsupported errors, and 0 for no violations or warnings. `report` returns 0 after producing a report, including reports containing violations or unsupported files.

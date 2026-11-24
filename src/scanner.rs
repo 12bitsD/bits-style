@@ -26,6 +26,7 @@ impl Cli {
 #[derive(Debug, Subcommand)]
 enum TopCommand {
     Style(StyleArgs),
+    Bench(crate::bench::BenchArgs),
 }
 
 #[derive(Debug, Args)]
@@ -105,6 +106,7 @@ struct FileScan {
     partial: BTreeSet<String>,
     not_applicable: BTreeSet<String>,
     line_scope: LineScope,
+    proves: Vec<(usize, String)>,
 }
 
 pub fn run(cli: Cli) -> u8 {
@@ -114,6 +116,15 @@ pub fn run(cli: Cli) -> u8 {
             StyleCommand::Check(args) => (StyleCommand::Check(args.clone()), args),
             StyleCommand::Report(args) => (StyleCommand::Report(args.clone()), args),
         },
+        TopCommand::Bench(args) => {
+            return match crate::bench::run(args) {
+                Ok(code) => code,
+                Err(error) => {
+                    eprintln!("bits bench: {error}");
+                    2
+                }
+            };
+        }
     };
     match execute(action, &args) {
         Ok(code) => code,
@@ -328,6 +339,7 @@ fn scan_report(
     }
     check_dependency_cycles(&scans, &dependency_scans, diff_mode, &mut report.results);
     filter_diff_violations(&scans, diff_mode, &mut report.results);
+    enforce_prove_budget(&scans, diff_mode, &mut report.results);
     report.finish();
 
     if include_passed {
@@ -494,8 +506,53 @@ fn scan_file(file: &DiscoveredFile) -> FileScan {
     ));
     let comments = analysis.comments.clone();
     merge_analysis(&mut scan, analysis);
-    text::apply_inline_suppressions(&file.relative, &source, &comments, &mut scan.violations);
+    scan.proves =
+        text::apply_inline_suppressions(&file.relative, &source, &comments, &mut scan.violations);
     scan
+}
+
+pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<Report, String> {
+    let discovery = discovery::discover(&[path.to_path_buf()], Scope::All, false, exclude)?;
+    Ok(scan_report(
+        &discovery.files,
+        &[],
+        default_jobs(),
+        false,
+        &discovery.unsupported,
+        false,
+    ))
+}
+
+fn enforce_prove_budget(scans: &[FileScan], diff_mode: bool, violations: &mut Vec<Violation>) {
+    if !diff_mode {
+        return;
+    }
+    const PROVE_BUDGET: usize = 1;
+    let mut added = Vec::new();
+    for scan in scans {
+        for (line, rule) in &scan.proves {
+            let is_new = match &scan.line_scope {
+                LineScope::Added(lines) => lines.contains(line),
+                LineScope::WholeFile => true,
+            };
+            if is_new {
+                added.push((scan.relative.as_str(), *line, rule.as_str()));
+            }
+        }
+    }
+    added.sort_unstable();
+    for (file, line, rule) in added.into_iter().skip(PROVE_BUDGET) {
+        violations.push(Violation::new(
+            "BCS015",
+            file,
+            line,
+            1,
+            "new bits:prove annotations exceed the per-change budget of 1",
+            format!("bits:prove({rule})"),
+            "<=1 new bits:prove per change",
+            false,
+        ));
+    }
 }
 
 fn merge_analysis(scan: &mut FileScan, analysis: SyntaxAnalysis) {
@@ -731,6 +788,6 @@ fn normalize_path(path: &Path) -> PathBuf {
     output
 }
 
-pub fn rule_ids() -> &'static [&'static str; 15] {
+pub fn rule_ids() -> &'static [&'static str] {
     &RULE_IDS
 }

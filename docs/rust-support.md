@@ -16,4 +16,5 @@ Rust 通过 Tree-sitter 接入，当前为 partial 支持，不代表完整 Rust
 - 不宣称完整生命周期、借用、类型推断、宏展开、trait resolution 或跨 crate 语义分析。
 - `static mut` 是明确的全局可变状态；普通 `const` 和不可变 `static` 不误报。
 - `match_arm` 的缩进交给 rustfmt，不使用简单的列偏移规则，避免 `let ... = match ...` 误报。
+- 已知待修项（V0.4 自检发现）：元组解构 `let (a, b) = ...` 会被 `BCS009` 误判为函数名与括号分离；多行闭包/let-else 的大括号位置由 rustfmt 决定，`BCS007` 在 Rust 上仍会误报。
 - 未适配语言仍进入 `unsupported`，不会与 Rust 的 partial coverage 混淆。

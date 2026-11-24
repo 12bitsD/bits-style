@@ -1,0 +1,20 @@
+# Golden negative corpus: pinned commits for reproducible false-positive checks.
+# Admission bar for new L1 rules: 0 hard violations, <1% warning false-positive rate.
+
+[[negative]]
+name = "click"
+url = "https://github.com/pallets/click.git"
+commit = "08b803cf32ceb2ae6a772c62d5da42757a897d44"
+path = "src"
+
+[[negative]]
+name = "httpx"
+url = "https://github.com/encode/httpx.git"
+commit = "7cff5f79bc78649bbcd3fd9aa7a74c86e0f63016"
+path = "httpx"
+
+[[negative]]
+name = "rich"
+url = "https://github.com/Textualize/rich.git"
+commit = "3a109ccdffe5b2d0e30684a304fbd388e99ce57b"
+path = "rich"

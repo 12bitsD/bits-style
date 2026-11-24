@@ -1,6 +1,6 @@
-# Bits Style Scanning Protocol V0.3
+# Bits Style Scanning Protocol V0.4
 
-本协议只负责发现文件、扫描、自动修复和输出结果。规范分为 AUTO-CORE、AUTO-PROFILE 和 REVIEW；REVIEW 不参与自动 PASS/FAIL。
+本协议只负责发现文件、扫描、自动修复、基准评测和输出结果。规范分为 L0（外部工具）、L1（AST 拓扑：`AUTO-CORE` / `AUTO-PROFILE`）和 L2（品味审查：`REVIEW`）；L2 不参与静态扫描 PASS/FAIL。
 
 ## 1. 命令
 
@@ -8,11 +8,13 @@
 bits style fix [paths...] [options]
 bits style check [paths...] [options]
 bits style report [paths...] [options]
+bits bench [--manifest benchmarks/manifest.toml] [--corpus corpus/bad] [--offline] [--strict]
 ```
 
 - `fix` 只执行确定不改变程序语义的修复，然后重新扫描。修复必须幂等。
 - `check` 只读扫描；无违规返回 0，有违规返回 1。
 - `report` 使用与 `check` 相同的扫描结果并输出结构化报告；报告成功生成时返回 0，扫描未完成返回 2。
+- `bench` 运行正负样本基准：正样本检查 `before` 召回与 `after` 消除；负样本拉取锁定 commit 的开源标杆库，只统计 L1 结构与语义规则（排除 `BCS001/002/007/008/009` 语言格式偏好）。正样本未全过或 `--strict` 下负样本存在硬错误时返回 1。
 
 ## 2. 参数
 
@@ -63,10 +65,12 @@ bits style check --diff --commit 61a5793 src
 
 - `severity = violation`：确定违规，`check` 返回 1。真实嵌套、圈复杂度、空 catch、真实参数重赋值、依赖环和不可达代码属于此类。
 - `severity = warning`：需要人工判断的提示，不阻断 CI。BCS003 的行数/局部变量、TSX 保守格式提示和无法确认边界的 catch-all 转换属于此类。
-- `confidence = high|low`：描述判定置信度，不代替 severity。
-- `explanation`：可选的函数级说明，来自 `bits:explain(BCS003)`；缺失时文本报告输出补充提示。升级为 `violation` 的函数级硬错误必须同时标记 `confidence = high`。
+- `confidence = high|low`：描述判定置信度，不代替 severity。升级为 `violation` 的函数级硬错误必须同时标记 `confidence = high`。
+- `category`：可选，优雅性维度分类：`level-purity`、`control-flow`、`state-gain`、`symmetry`、`role`。
+- `obligation`：可选，处理义务：`refactor`（必须重构）、`prove_minimalism`（建议重构或登记稀缺举证）、`critic_review`（已附 `bits:prove`，待独立 Critic 核验）。
+- `explanation`：可选的说明文本，来自 `bits:prove` 或兼容的 `bits:explain(BCS003)`；warning 缺失说明时文本报告输出温和提示，不强制要求补注释。
 - `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
-- `summary.warnings` 和 `summary.unsupported_files` 分别统计 warning 与 unsupported 文件。
+- `summary.warnings`、`summary.unsupported_files` 和 `summary.proves` 分别统计 warning、unsupported 文件和处于 `critic_review` 的举证数。
 
 ## 4. 扫描流程
 
@@ -88,14 +92,23 @@ bits style check --diff --commit 61a5793 src
 
 输出按 `file → start.line → start.column → rule_id` 排序。
 
-## 5. 行级豁免
+## 5. 行级豁免与稀缺举证
 
 ```text
 bits:allow(BCS004): 框架回调签名固定
 bits:allow(BCS010): FFI 要求保留原始符号名
+bits:prove(BCS003, test=test_lock): cursor 与 checksum 共享锁；拆分导致提前解锁
 ```
 
-豁免必须包含规则号和理由，只作用于当前行或下一行。缺少规则号或理由时报告 BCS015。禁止文件级、目录级 blanket suppression。
+- `bits:allow` 仅用于外部硬契约，必须包含规则号和理由，只作用于当前行或下一行（`BCS004` 覆盖完整签名）。
+- `bits:prove` 必须使用 `;` / `；` 分隔的两段式说明，可附 `test=<name>`；只作用于 warning 并标记 `obligation = critic_review`，**不能豁免硬错误**。
+- 以下情况均产生 `BCS015` 硬错误：
+  1. 缺少规则号、理由或两段式结构的注释；
+  2. **未压中任何告警的 `bits:allow`（墓碑注释）**；
+  3. **未命中活跃 warning 的 `bits:prove`（墓碑注释）**；
+  4. 使用 `bits:prove` 试图豁免 `severity = violation` 的硬错误；
+  5. `--diff` 模式下新增 `bits:prove` 超过 **1** 条配额。
+- 禁止文件级、目录级 blanket suppression。
 
 ## 6. 存量 baseline
 
@@ -119,8 +132,8 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.3.6" },
-  "style": { "name": "Bits’s Coding Style", "version": "0.3" },
+  "tool": { "name": "bits", "version": "0.4.0" },
+  "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {
     "executed": ["BCS001", "BCS002"],
@@ -136,13 +149,15 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
         "start": { "line": 81, "column": 9 },
         "end": { "line": 81, "column": 11 }
       },
-      "message": "control-flow nesting exceeds three levels",
-      "actual": 4,
-      "expected": "<=3",
+      "message": "mutually exclusive branches repeat the same leading call",
+      "actual": "await harness.check()",
+      "expected": "hoist_shared_setup_or_bind_handler",
       "fixable": false,
       "severity": "warning",
-      "confidence": "low",
-      "explanation": "cohesive transition; splitting would hide invariants"
+      "confidence": "high",
+      "category": "symmetry",
+      "obligation": "critic_review",
+      "explanation": "check depends on branch timing; hoisting changes init order [test=test_init_order]"
     }
   ],
   "scan_errors": [],
@@ -157,7 +172,8 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
     "files_fixed": 0,
     "violations_fixed": 0,
     "suppressed_violations": 0,
-    "unsupported_files": 0
+    "unsupported_files": 0,
+    "proves": 1
   }
 }
 ```

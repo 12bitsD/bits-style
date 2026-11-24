@@ -1,4 +1,5 @@
 pub mod analyze;
+pub mod bench;
 pub mod discovery;
 pub mod language;
 pub mod model;

@@ -3,14 +3,15 @@
 [![CI](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml/badge.svg)](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bits’s Coding Style V0.3 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
+Bits’s Coding Style V0.4 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
 
-- [Coding Style V0.3：BCS001–BCS015](STYLE.md)
+- [Coding Style V0.4：品味治理框架 + BCS001–BCS016](STYLE.md)
+- [Scanning Protocol V0.4](PROTOCOL.md)
+- [Bits Bench 基线体检报告](benchmarks/BASELINE.md)
+- [Agent 集成与 L2 Critic Skill](docs/agent-integration.md)
 - [Language Profiles](docs/profiles.md)
 - [Go Profile：错误、资源、并发与抽象](profiles/go.md)
 - [Rust 扫描支持边界](docs/rust-support.md)
-- [Agent 集成与完整 Skill](docs/agent-integration.md)
-- [Scanning Protocol V0.3](PROTOCOL.md)
 - [逐语言支持矩阵](docs/language-support.md)
 - [JSON Report Schema](schemas/report.schema.json)
 
@@ -53,17 +54,17 @@ Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，�
 
 新规则进入 `AUTO-CORE` 前必须同时满足：可确定性判定、误报率低、有真实项目正反例、严重级别明确，且不会诱导开发者拆散内聚逻辑或增加状态包装。做不到的规则只进入 `AUTO-PROFILE`、`warning` 或 `REVIEW`。
 
-## 核心结构
+## 三层漏斗（V0.4）
 
-- `AUTO-CORE`：跨语言、可机检的语义规则。
-- `AUTO-PROFILE`：由语言 Profile 决定的可机检格式和写法。
-- `REVIEW`：需要设计判断，不参与自动 PASS/FAIL。
+- **L0 卫生层**：官方 formatter / Ruff / Mypy / Clippy / TSC 负责语法、格式、重复导入、未使用变量和 `assert`，Bits 不重复造轮子。
+- **L1 拓扑层（`bits` AST）**：只抓纯结构事实，不猜业务语义。`AUTO-CORE` 负责跨语言硬门禁与高信噪比提示，`AUTO-PROFILE` 负责语言 Profile 格式底线。
+- **L2 品味层（Skill + 独立 Critic）**：只聚焦 Diff 改动函数和 L1 Warning 热区，用**层级纯度、控制流平直度、信息增益、对称性**四个维度追问；无问题保持沉默。
 
-C/C++ 保留 Tab 8 和函数换行大括号；Python/Rust 使用 4 空格；JavaScript/TypeScript/TSX 使用 2 空格、lowerCamelCase 和同行大括号。编译器、ABI、FFI 和框架强制签名可以行级豁免。
+## Warning、举证与 Unsupported
 
-## Warning、React 与 Unsupported
-
-- BCS003 的行数和局部变量输出 warning，真实嵌套和圈复杂度仍为硬错误；优先按阶段拆分，只有必须保持内聚时才使用 `bits:explain(BCS003): 具体机制；共享约束；拆分风险`（不豁免硬错误，不接受空话套话）。
+- **Warning 不要求补注释**。处理顺序固定为：删冗余层 → 换成表/Schema/handler 绑定 → 按职责拆分 → 最后才登记稀缺举证。
+- `bits:allow(RULE): 理由` 仅用于外部硬契约；`bits:prove(RULE[, test=name]): 最简理由；具体风险` 仅用于 warning，**每次 diff 最多新增 1 条**，不能豁免硬错误，且必须由独立 Critic/人核验。未命中告警的 `allow`/`prove` 直接报 `BCS015` 硬错误（墓碑清理）。
+- 新增 `BCS016`：穷尽互斥分支头部重复同一前置调用（如 `await harness.check()`）时提示提升或绑定 handler。在 `click`/`httpx`/`rich` 共 140 个文件上 0 误报（`bits bench`）。
 - React 组件自动接受 PascalCase 和展示型布尔 props；JSX 区域交给 formatter，TSX 保守提示不阻断 CI。
 - `severity = violation` 才返回 1；warning 只进入报告。`report` 展示全部结果。
 - Go 等未适配文件进入 `unsupported` 列表，`check` 返回 2；Rust 已适配的部分按 `partial` 明确报告，不再形成“未覆盖却 passed”。
@@ -113,6 +114,7 @@ bits style check --diff --commit 61a5793 src
 bits style report src --format jsonl
 bits style report src --format sarif
 bits style report src --jobs 8 --include-passed
+bits bench --offline
 ```
 
 `--changed` 和 `--staged` 扫描整个文件。`--diff` 只报告新增/修改行相关的违规，默认相对 `HEAD`；`--commit` 可指定 SHA、分支、tag 或 `HEAD~n`。未跟踪文件按全文件检查，纯删除且没有新增行的文件不进入扫描。patch 无法可靠解析时返回 2，不会降级为通过。
@@ -173,7 +175,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-103 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
+109 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
 
 ## License
 

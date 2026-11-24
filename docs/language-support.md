@@ -1,6 +1,6 @@
 # Language Support
 
-本矩阵是 V0.2 扫描器能力的公开边界。`STYLE.md` 中的规则定义不因此缩减。
+本矩阵是 V0.4 扫描器能力的公开边界。`STYLE.md` 中的规则定义不因此缩减；L2 品味审查（四个优雅维度）由 Agent Skill 执行，不在静态扫描覆盖范围内。
 
 - **supported**：对应语法有通过和失败测试，实现该规则定义的确定性检查。
 - **partial**：只实现列出的保守子集，未实现部分不得被理解为通过。
@@ -14,18 +14,19 @@
 | `BCS001` | partial | partial | partial | 禁止混用及错误缩进字符，处理行尾空白和末尾换行；续行与连续块宽度未完整判定 |
 | `BCS002` | partial | partial | partial | 默认 80 列；字符串字面量保守识别用户文本、日志和 URL；续行由 Profile formatter 决定 |
 | `BCS003` | partial | partial | partial | 行数和局部变量为 warning；真实嵌套和圈复杂度为 violation；多行类型声明不计行数；支持 `bits:explain` |
-| `BCS004` | partial | partial | partial | 参数数量为 warning；直接布尔行为参数保留检查，对象布尔字段跳过；签名豁免覆盖整个函数签名 |
+| `BCS004` | partial | partial | partial | 参数数量为 warning；仅无默认值的位置布尔参数判为行为开关，带默认值配置项与 keyword-only 选项跳过；签名豁免覆盖整个函数签名 |
 | `BCS005` | partial | partial | partial | 冗余 else；C 限制 goto，C++ 禁止 goto；查表属于 REVIEW |
 | `BCS006` | partial | partial | partial | 按 assignment target 判断链式赋值；关键字参数不误报；嵌套三元和双重否定保留检查 |
 | `BCS007` | supported | not_applicable | supported | 所有控制块必须加大括号；C/C++ 函数 `{` 下一行，JS/TS 同行 |
 | `BCS008` | partial | not_applicable | partial | C/C++ case 对齐 switch；JS/TS 使用一级缩进；fallthrough 采用保守检查 |
 | `BCS009` | partial | partial | TSX 为低置信 warning；其他为 partial | 运算符空白按 AST 左右节点判断；多行 closing ) 不报 padding；JSX 区域交给 formatter |
 | `BCS010` | partial | partial | partial | 命名为 warning；模块级 const 同时接受两种命名；Pydantic/JSON 字段、HTTP 回调和 React/memo 组件自动豁免 |
-| `BCS011` | partial | partial | partial | 可变全局、直接环境读取和真实参数重赋值；类型别名、对象属性更新和普通类型注解变量不误报 |
+| `BCS011` | partial | partial | partial | 可变全局、直接环境读取和真实参数重赋值；类型别名（含 `typing.Callable` 等带前缀形式）、模块级 `logger`、对象属性更新和普通类型注解变量不误报 |
 | `BCS012` | partial | not_applicable | not_applicable | C/C++ 宏、inline 和函数内条件编译；宏的全部调用方语义不完整 |
 | `BCS013` | C++ partial；C 异常语法 N/A、非 void 返回值检查未实现 | partial | partial | 空 catch 为硬错误；预期 false/null 失败结果和边界转换为 warning；复杂业务错误语义属于 REVIEW |
-| `BCS014` | partial | partial | partial | 依赖环、不可达代码为硬错误；type-only import、模板插值和 `__all__` re-export 计为真实引用；注释旧代码为 warning |
-| `BCS015` | supported | supported | supported | TODO 格式、行级豁免格式、editor modeline；注释内容属于 REVIEW |
+| `BCS014` | partial | partial | partial | 依赖环、不可达代码为硬错误；type-only import、模板插值、`__all__` re-export 及 `__init__.py` 相对通配公开导出计为合法引用；注释旧代码为 warning |
+| `BCS015` | supported | supported | supported | TODO 格式、`allow`/`prove` 格式、未使用（墓碑）豁免/举证硬错误、diff `prove` 配额（≤1）、editor modeline；注释内容属于 REVIEW |
+| `BCS016` | partial | partial | partial | 带 `else` 的穷尽 `if/elif/else` 且条件无副作用时，各分支首条独立调用完全一致报 warning（`symmetry` / `prove_minimalism`）；Python `match` 暂未覆盖 |
 
 ## 文件扩展名
 

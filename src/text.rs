@@ -1,4 +1,3 @@
-use std::collections::BTreeSet;
 use std::ops::Range;
 use std::sync::OnceLock;
 
@@ -301,7 +300,10 @@ fn looks_like_commented_code(text: &str) -> bool {
         .trim_start_matches("/*")
         .trim_end_matches("*/")
         .trim();
-    if body.starts_with("bits:allow") || body.starts_with("bits:explain") {
+    if body.starts_with("bits:allow")
+        || body.starts_with("bits:explain")
+        || body.starts_with("bits:prove")
+    {
         return false;
     }
     static CODE: OnceLock<Regex> = OnceLock::new();
@@ -314,50 +316,202 @@ fn looks_like_commented_code(text: &str) -> bool {
         && body.len() < 240
 }
 
+struct InlineAnnotation {
+    rule: String,
+    line: usize,
+    payload: String,
+    used: bool,
+}
+
+impl InlineAnnotation {
+    fn matches(&self, violation: &Violation) -> bool {
+        if self.rule != violation.rule_id {
+            return false;
+        }
+        let start = violation.range.start.line;
+        let end = violation.range.end.line;
+        if violation.rule_id == "BCS004" {
+            return (self.line >= start && self.line <= end)
+                || (self.line < end && self.line + 1 >= start);
+        }
+        start == self.line || start == self.line + 1
+    }
+}
+
+type InlineAnnotations = (Vec<InlineAnnotation>, Vec<InlineAnnotation>);
+
+fn annotation_regexes() -> (&'static Regex, &'static Regex) {
+    static SUPPRESSION: OnceLock<Regex> = OnceLock::new();
+    static PROOF: OnceLock<Regex> = OnceLock::new();
+    let suppression = SUPPRESSION
+        .get_or_init(|| Regex::new(r"bits:allow\((BCS0(?:0[1-9]|1[0-6]))\):\s*(\S.*)").unwrap());
+    let proof = PROOF.get_or_init(|| {
+        Regex::new(concat!(
+            r"bits:prove\((BCS0(?:0[1-9]|1[0-6]))",
+            r"(?:,\s*test=([A-Za-z_]\w*(?:::\w+|\.\w+)*))?\):\s*",
+            r"([^;；\r\n]+)[;；]\s*(\S[^\r\n]*)"
+        ))
+        .unwrap()
+    });
+    (suppression, proof)
+}
+
+fn annotation_error(
+    relative: &str,
+    line: usize,
+    message: &str,
+    actual: String,
+    expected: &str,
+) -> Violation {
+    Violation::new(
+        "BCS015", relative, line, 1, message, actual, expected, false,
+    )
+}
+
+fn parse_allow(text: &str, line: usize, regex: &Regex) -> Result<InlineAnnotation, &'static str> {
+    let captures = regex
+        .captures(text)
+        .ok_or("suppression must include a rule id and reason")?;
+    Ok(InlineAnnotation {
+        rule: captures[1].to_owned(),
+        line,
+        payload: String::new(),
+        used: false,
+    })
+}
+
+fn parse_prove(text: &str, line: usize, regex: &Regex) -> Result<InlineAnnotation, &'static str> {
+    let captures = regex
+        .captures(text)
+        .ok_or("proof must state minimal form and concrete risk in two parts")?;
+    let minimal = captures[3].trim();
+    let risk = captures[4].trim();
+    let payload = match captures.get(2) {
+        Some(test) => format!("{minimal}; {risk} [test={}]", test.as_str()),
+        None => format!("{minimal}; {risk}"),
+    };
+    Ok(InlineAnnotation {
+        rule: captures[1].to_owned(),
+        line,
+        payload,
+        used: false,
+    })
+}
+
+fn parse_inline_annotations(
+    relative: &str,
+    source: &str,
+    comments: &[Range<usize>],
+    violations: &mut Vec<Violation>,
+) -> InlineAnnotations {
+    let (suppression, proof) = annotation_regexes();
+    let mut allows = Vec::new();
+    let mut proves = Vec::new();
+    for comment in comments {
+        let Some(text) = source.get(comment.clone()) else {
+            continue;
+        };
+        let (line, _) = point_at(source, comment.start);
+        let actual = || text.lines().next().unwrap_or("").to_owned();
+        if text.contains("bits:allow") {
+            match parse_allow(text, line, suppression) {
+                Ok(annotation) => allows.push(annotation),
+                Err(message) => violations.push(annotation_error(
+                    relative,
+                    line,
+                    message,
+                    actual(),
+                    "bits:allow(BCSxxx): reason",
+                )),
+            }
+        }
+        if text.contains("bits:prove") {
+            match parse_prove(text, line, proof) {
+                Ok(annotation) => proves.push(annotation),
+                Err(message) => violations.push(annotation_error(
+                    relative,
+                    line,
+                    message,
+                    actual(),
+                    "bits:prove(BCSxxx[, test=name]): minimal reason; concrete risk",
+                )),
+            }
+        }
+    }
+    (allows, proves)
+}
+
+fn apply_proofs(
+    relative: &str,
+    violations: &mut [Violation],
+    proves: &mut [InlineAnnotation],
+    extra: &mut Vec<Violation>,
+) -> Vec<(usize, String)> {
+    let mut matched = Vec::new();
+    for violation in violations {
+        let Some(annotation) = proves
+            .iter_mut()
+            .find(|annotation| !annotation.used && annotation.matches(violation))
+        else {
+            continue;
+        };
+        annotation.used = true;
+        if violation.severity == "warning" {
+            violation.explanation = Some(annotation.payload.clone());
+            violation.obligation = Some("critic_review".to_owned());
+            matched.push((annotation.line, annotation.rule.clone()));
+        } else {
+            extra.push(annotation_error(
+                relative,
+                annotation.line,
+                "bits:prove cannot waive a hard violation",
+                format!("bits:prove({})", annotation.rule),
+                "refactor_or_external_contract_allow",
+            ));
+        }
+    }
+    matched
+}
+
 pub fn apply_inline_suppressions(
     relative: &str,
     source: &str,
     comments: &[Range<usize>],
     violations: &mut Vec<Violation>,
-) {
-    static SUPPRESSION: OnceLock<Regex> = OnceLock::new();
-    let suppression = SUPPRESSION
-        .get_or_init(|| Regex::new(r"bits:allow\((BCS0(?:0[1-9]|1[0-5]))\):\s*(\S.*)").unwrap());
-    let mut allowed = BTreeSet::new();
-    for comment in comments {
-        let Some(text) = source.get(comment.clone()) else {
-            continue;
-        };
-        if !text.contains("bits:allow") {
-            continue;
-        }
-        let (line, _) = point_at(source, comment.start);
-        if let Some(captures) = suppression.captures(text) {
-            let rule = captures[1].to_owned();
-            allowed.insert((rule.clone(), line));
-            allowed.insert((rule, line + 1));
-        } else {
-            violations.push(Violation::new(
-                "BCS015",
-                relative,
-                line,
-                1,
-                "suppression must include a rule id and reason",
-                text.lines().next().unwrap_or(""),
-                "bits:allow(BCSxxx): reason",
-                false,
-            ));
-        }
-    }
+) -> Vec<(usize, String)> {
+    let (mut allows, mut proves) = parse_inline_annotations(relative, source, comments, violations);
     violations.retain(|violation| {
-        if violation.rule_id == "BCS004" {
-            return !allowed.iter().any(|(rule, line)| {
-                rule == &violation.rule_id
-                    && (*line >= violation.range.start.line && *line <= violation.range.end.line)
-            });
+        if let Some(annotation) = allows
+            .iter_mut()
+            .find(|annotation| annotation.matches(violation))
+        {
+            annotation.used = true;
+            return false;
         }
-        !allowed.contains(&(violation.rule_id.clone(), violation.range.start.line))
+        true
     });
+    let mut extra = Vec::new();
+    let matched = apply_proofs(relative, violations, &mut proves, &mut extra);
+    for annotation in allows.into_iter().filter(|a| !a.used) {
+        extra.push(annotation_error(
+            relative,
+            annotation.line,
+            "unused bits:allow must be deleted",
+            format!("bits:allow({})", annotation.rule),
+            "used_suppression_or_delete",
+        ));
+    }
+    for annotation in proves.into_iter().filter(|a| !a.used) {
+        extra.push(annotation_error(
+            relative,
+            annotation.line,
+            "unused bits:prove must be deleted",
+            format!("bits:prove({})", annotation.rule),
+            "active_warning_or_delete",
+        ));
+    }
+    violations.extend(extra);
+    matched
 }
 
 #[cfg(test)]

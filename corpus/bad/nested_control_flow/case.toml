@@ -1,0 +1,4 @@
+dimension = "control-flow"
+expect = ["BCS003", "BCS006"]
+before = "before.py"
+after = "after.py"

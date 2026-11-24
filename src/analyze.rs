@@ -64,14 +64,14 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
     });
     result.executed.extend(
         [
-            "BCS003", "BCS004", "BCS005", "BCS006", "BCS010", "BCS011", "BCS014",
+            "BCS003", "BCS004", "BCS005", "BCS006", "BCS010", "BCS011", "BCS014", "BCS016",
         ]
         .map(str::to_owned),
     );
     result.partial.extend(
         [
             "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS008", "BCS009", "BCS010",
-            "BCS011", "BCS012", "BCS013", "BCS014",
+            "BCS011", "BCS012", "BCS013", "BCS014", "BCS016",
         ]
         .map(str::to_owned),
     );
@@ -235,9 +235,8 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
                     "explicit_branches",
                 );
             }
-            "unary_expression" | "unary_operator"
-                if node_text(source, node).trim_start().starts_with("!!")
-                    || node_text(source, node).trim_start().starts_with("not not ") =>
+            "unary_expression" | "not_operator" | "unary_operator"
+                if is_double_negation(source, node) =>
             {
                 push(
                     &mut result.violations,
@@ -406,7 +405,8 @@ fn analyze_function(
             .collect::<BTreeSet<_>>();
         for parameter in params {
             let text = node_text(source, parameter);
-            if is_boolean_parameter(language, text) && !react_component {
+            if is_positional_required_boolean(language, source, parameter, text) && !react_component
+            {
                 push_function_contract(
                     violations,
                     relative,
@@ -835,6 +835,205 @@ fn analyze_if(
             "separate_statement",
         );
     }
+
+    analyze_branch_head_duplication(relative, source, node, violations);
+}
+
+fn analyze_branch_head_duplication(
+    relative: &str,
+    source: &str,
+    node: Node,
+    violations: &mut Vec<Violation>,
+) {
+    if node
+        .parent()
+        .is_some_and(|parent| parent.kind() == "else_clause")
+    {
+        return;
+    }
+    let mut branches: Vec<(Option<Node>, Node)> = Vec::new();
+    let mut current = node;
+    let exhaustive = loop {
+        let condition = current.child_by_field_name("condition");
+        let Some(consequence) = current.child_by_field_name("consequence") else {
+            return;
+        };
+        branches.push((condition, consequence));
+        let has_flat_alternatives = (0..current.named_child_count()).any(|index| {
+            current
+                .named_child(index as u32)
+                .is_some_and(|child| matches!(child.kind(), "elif_clause" | "else_clause"))
+        });
+        if has_flat_alternatives {
+            let mut has_else = false;
+            for index in 0..current.named_child_count() {
+                let Some(child) = current.named_child(index as u32) else {
+                    continue;
+                };
+                match child.kind() {
+                    "elif_clause" => {
+                        let Some(body) = child.child_by_field_name("consequence") else {
+                            return;
+                        };
+                        branches.push((child.child_by_field_name("condition"), body));
+                    }
+                    "else_clause" => {
+                        let Some(body) = meaningful_statements(child).into_iter().next() else {
+                            return;
+                        };
+                        branches.push((None, body));
+                        has_else = true;
+                    }
+                    _ => {}
+                }
+            }
+            break has_else;
+        }
+        let Some(alternative) = current.child_by_field_name("alternative") else {
+            break false;
+        };
+        match alternative.kind() {
+            "if_statement" | "if_expression" => {
+                current = alternative;
+            }
+            "else_clause" => {
+                let meaningful = meaningful_statements(alternative);
+                let Some(&child) = meaningful.first() else {
+                    return;
+                };
+                if matches!(child.kind(), "if_statement" | "if_expression") {
+                    current = child;
+                } else {
+                    branches.push((None, child));
+                    break true;
+                }
+            }
+            _ => {
+                branches.push((None, alternative));
+                break true;
+            }
+        }
+    };
+    let mut calls: Vec<(String, String)> = Vec::new();
+    for (condition, body) in branches {
+        if condition.is_some_and(has_expression_side_effect) {
+            return;
+        }
+        let Some(call) = leading_pure_call(source, body) else {
+            return;
+        };
+        calls.push(call);
+    }
+    if !exhaustive || calls.len() < 2 {
+        return;
+    }
+    let Some((first_key, first_display)) = calls.first() else {
+        return;
+    };
+    if !calls.iter().all(|(key, _)| key == first_key) {
+        return;
+    }
+    let mut violation = Violation::new(
+        "BCS016",
+        relative,
+        node.start_position().row + 1,
+        node.start_position().column + 1,
+        "mutually exclusive branches repeat the same leading call",
+        first_display.clone(),
+        "hoist_shared_setup_or_bind_handler",
+        false,
+    );
+    violation.range = crate::model::Range {
+        start: crate::model::Position::new(
+            node.start_position().row + 1,
+            node.start_position().column + 1,
+        ),
+        end: crate::model::Position::new(
+            node.end_position().row + 1,
+            node.end_position().column + 1,
+        ),
+    };
+    violation.mark_taste_warning("symmetry");
+    violations.push(violation);
+}
+
+fn leading_pure_call(source: &str, body: Node) -> Option<(String, String)> {
+    let first = if is_block(body) {
+        meaningful_statements(body).into_iter().next()?
+    } else {
+        body
+    };
+    let expr = if first.kind() == "expression_statement" {
+        let mut children = meaningful_statements(first);
+        if children.len() != 1 {
+            return None;
+        }
+        children.remove(0)
+    } else {
+        first
+    };
+    let (is_await, call) = if matches!(expr.kind(), "await" | "await_expression") {
+        let mut children = meaningful_statements(expr);
+        if children.len() != 1 {
+            return None;
+        }
+        (true, children.remove(0))
+    } else {
+        (false, expr)
+    };
+    if !matches!(call.kind(), "call" | "call_expression") {
+        return None;
+    }
+    if call
+        .child_by_field_name("arguments")
+        .is_some_and(has_expression_side_effect)
+        || call
+            .child_by_field_name("function")
+            .is_some_and(has_expression_side_effect)
+    {
+        return None;
+    }
+    let key = format!("await={is_await}:{}", expression_key(source, expr));
+    let display = node_text(source, expr).trim().to_owned();
+    Some((key, display))
+}
+
+fn expression_key(source: &str, node: Node) -> String {
+    let count = node.named_child_count();
+    if count == 0 {
+        return format!("{}:{}", node.kind(), node_text(source, node).trim());
+    }
+    let children = (0..count)
+        .filter_map(|index| node.named_child(index as u32))
+        .filter(|child| child.kind() != "comment")
+        .map(|child| expression_key(source, child))
+        .collect::<Vec<_>>()
+        .join(",");
+    format!("{}({children})", node.kind())
+}
+
+fn has_expression_side_effect(node: Node) -> bool {
+    let kind = node.kind();
+    if kind.contains("call")
+        || kind.contains("assign")
+        || kind.contains("update")
+        || kind.contains("await")
+        || matches!(
+            kind,
+            "lambda"
+                | "lambda_expression"
+                | "closure_expression"
+                | "arrow_function"
+                | "yield"
+                | "yield_expression"
+        )
+    {
+        return true;
+    }
+    (0..node.named_child_count()).any(|index| {
+        node.named_child(index as u32)
+            .is_some_and(has_expression_side_effect)
+    })
 }
 
 fn analyze_loop(
@@ -844,7 +1043,9 @@ fn analyze_loop(
     node: Node,
     violations: &mut Vec<Violation>,
 ) {
-    if let Some(body) = node.child_by_field_name("body") {
+    if language != Language::Python
+        && let Some(body) = node.child_by_field_name("body")
+    {
         if is_block(body) {
             analyze_opening_brace(language, relative, source, node, body, false, violations);
         } else {
@@ -1235,7 +1436,13 @@ fn analyze_import(
         BTreeSet::new()
     };
     let mut record = |specifier: String, binding: Option<String>, type_only: bool| {
-        if diagnostics && (binding.as_deref() == Some("*") || text.contains("import *")) {
+        let init_reexport = language == Language::Python
+            && relative.ends_with("__init__.py")
+            && text.trim_start().starts_with("from .");
+        if diagnostics
+            && (binding.as_deref() == Some("*") || text.contains("import *"))
+            && !init_reexport
+        {
             push(
                 &mut result.violations,
                 relative,
@@ -1539,6 +1746,7 @@ fn analyze_variable(
                 node.kind() == "assignment"
                     && !is_type_alias(language, source, node)
                     && !name.starts_with('_')
+                    && !value.starts_with("logging.getLogger(")
                     && (!valid_upper_snake(name) || mutable_literal)
             }
             _ if language.is_script() => {
@@ -1705,7 +1913,17 @@ fn is_type_alias(language: Language, source: &str, node: Node) -> bool {
         "Final",
         "type ",
     ];
-    if prefixes.iter().any(|prefix| value.starts_with(prefix)) {
+    let unqualified = value.split_once('.').map_or(value, |(module, rest)| {
+        if module.chars().all(|c| c.is_alphanumeric() || c == '_') {
+            rest
+        } else {
+            value
+        }
+    });
+    if prefixes
+        .iter()
+        .any(|prefix| value.starts_with(prefix) || unqualified.starts_with(prefix))
+    {
         return true;
     }
     let builtins = [
@@ -2171,6 +2389,59 @@ fn parameter_nodes(language: Language, parameters: Node) -> Vec<Node> {
                     .is_some_and(|parent| parent.kind() != "parameters"))
         })
         .collect()
+}
+
+fn is_positional_required_boolean(
+    language: Language,
+    source: &str,
+    parameter: Node,
+    text: &str,
+) -> bool {
+    if !is_boolean_parameter(language, text) {
+        return false;
+    }
+    if parameter.child_by_field_name("value").is_some()
+        || parameter.child_by_field_name("default_value").is_some()
+        || text.contains('=')
+    {
+        return false;
+    }
+    if language == Language::Python {
+        let mut sibling = parameter.prev_sibling();
+        while let Some(current) = sibling {
+            if current.kind() == "list_splat_pattern" || node_text(source, current) == "*" {
+                return false;
+            }
+            sibling = current.prev_sibling();
+        }
+    }
+    true
+}
+
+fn is_double_negation(source: &str, node: Node) -> bool {
+    let text = node_text(source, node).trim_start();
+    let negated = match node.kind() {
+        "not_operator" => text.starts_with("not "),
+        "unary_expression" | "unary_operator" => text.starts_with('!'),
+        _ => false,
+    };
+    if !negated {
+        return false;
+    }
+    let mut inner = meaningful_statements(node).into_iter().next();
+    while let Some(current) = inner {
+        if current.kind() == "parenthesized_expression" {
+            inner = meaningful_statements(current).into_iter().next();
+            continue;
+        }
+        let inner_text = node_text(source, current).trim_start();
+        return match current.kind() {
+            "not_operator" => inner_text.starts_with("not "),
+            "unary_expression" | "unary_operator" => inner_text.starts_with('!'),
+            _ => false,
+        };
+    }
+    false
 }
 
 fn is_boolean_parameter(language: Language, text: &str) -> bool {

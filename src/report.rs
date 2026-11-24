@@ -38,10 +38,14 @@ fn text(report: &Report, include_passed: bool) -> String {
         ));
         if let Some(explanation) = &violation.explanation {
             output.push_str(&format!("  explanation: {explanation}\n"));
-        } else if violation.rule_id == "BCS003" && violation.severity == "warning" {
-            output.push_str(
-                "  hint: split by responsibility, or add bits:explain(BCS003): <mechanism>; <shared invariant>; <splitting risk>\n",
-            );
+        } else if violation.severity == "warning"
+            && (violation.rule_id == "BCS003"
+                || violation.obligation.as_deref() == Some("prove_minimalism"))
+        {
+            output.push_str(&format!(
+                "  hint: prefer refactoring; if unavoidable, register bits:prove({}[, test=name]): <minimal reason>; <concrete risk> (budget: 1 per change)\n",
+                violation.rule_id
+            ));
         }
     }
     for error in &report.scan_errors {
@@ -107,6 +111,8 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
                 "severity": violation.severity,
                 "confidence": violation.confidence,
                 "explanation": violation.explanation,
+                "category": violation.category,
+                "obligation": violation.obligation,
             }))
             .map_err(|error| error.to_string())?,
         );
@@ -192,6 +198,8 @@ fn sarif_result(violation: &Violation) -> Value {
             "severity": violation.severity,
             "confidence": violation.confidence,
             "explanation": violation.explanation,
+            "category": violation.category,
+            "obligation": violation.obligation,
         },
         "locations": [{
             "physicalLocation": {
