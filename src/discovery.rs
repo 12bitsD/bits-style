@@ -34,6 +34,7 @@ pub struct Discovery {
     pub root: PathBuf,
     pub files: Vec<DiscoveredFile>,
     pub unsupported: Vec<String>,
+    pub dependency_context: Vec<DiscoveredFile>,
 }
 
 pub fn discover(
@@ -93,7 +94,65 @@ fn discover_diff(
             line_scopes.insert(relative, LineScope::WholeFile);
         }
     }
-    finalize_files(root, paths, excludes, Some(&line_scopes))
+    let mut discovery = finalize_files(root.clone(), paths, excludes, Some(&line_scopes))?;
+    discovery.dependency_context =
+        git_dependency_context(&root, no_ignore, excludes, &discovery.files)?;
+    Ok(discovery)
+}
+
+fn git_dependency_context(
+    root: &Path,
+    no_ignore: bool,
+    excludes: &[String],
+    changed: &[DiscoveredFile],
+) -> Result<Vec<DiscoveredFile>, String> {
+    let mut command = Command::new("git");
+    command
+        .current_dir(root)
+        .args(["ls-files", "--cached", "--others", "-z"]);
+    if !no_ignore {
+        command.arg("--exclude-standard");
+    }
+    let output = command
+        .output()
+        .map_err(|error| format!("failed to list dependency context: {error}"))?;
+    if !output.status.success() {
+        return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+    }
+
+    let changed: BTreeSet<&str> = changed.iter().map(|file| file.relative.as_str()).collect();
+    let globs = exclusion_globs(excludes)?;
+    let mut files = Vec::new();
+    for relative in String::from_utf8_lossy(&output.stdout)
+        .split('\0')
+        .filter(|name| !name.is_empty())
+    {
+        if changed.contains(relative) || globs.is_match(Path::new(relative)) {
+            continue;
+        }
+        let relative = relative.to_owned();
+        if excluded_directory(&relative) {
+            continue;
+        }
+        let absolute = root.join(&relative);
+        let Ok(metadata) = std::fs::symlink_metadata(&absolute) else {
+            continue;
+        };
+        if !metadata.file_type().is_file() {
+            continue;
+        }
+        let Some(language) = Language::from_path(&absolute) else {
+            continue;
+        };
+        files.push(DiscoveredFile {
+            absolute,
+            relative,
+            language,
+            line_scope: LineScope::WholeFile,
+        });
+    }
+    files.sort_by(|a, b| a.relative.cmp(&b.relative));
+    Ok(files)
 }
 
 fn finalize_files(
@@ -129,15 +188,7 @@ fn finalize_files(
             language,
         });
     }
-    let mut globs = GlobSetBuilder::new();
-    for pattern in excludes
-        .iter()
-        .map(String::as_str)
-        .chain(["**/*.generated.*", "**/*.gen.*"])
-    {
-        globs.add(Glob::new(pattern).map_err(|error| error.to_string())?);
-    }
-    let globs = globs.build().map_err(|error| error.to_string())?;
+    let globs = exclusion_globs(excludes)?;
     files.retain(|file| !globs.is_match(&file.relative) && !excluded_directory(&file.relative));
     unsupported.retain(|file| !globs.is_match(file) && !excluded_directory(file));
     unsupported.sort();
@@ -146,7 +197,20 @@ fn finalize_files(
         root,
         files,
         unsupported,
+        dependency_context: Vec::new(),
     })
+}
+
+fn exclusion_globs(excludes: &[String]) -> Result<globset::GlobSet, String> {
+    let mut globs = GlobSetBuilder::new();
+    for pattern in excludes
+        .iter()
+        .map(String::as_str)
+        .chain(["**/*.generated.*", "**/*.gen.*"])
+    {
+        globs.add(Glob::new(pattern).map_err(|error| error.to_string())?);
+    }
+    globs.build().map_err(|error| error.to_string())
 }
 
 fn excluded_directory(relative: &str) -> bool {
@@ -325,6 +389,9 @@ fn git_diff_lines(
             "--unified=0",
             "--no-color",
             "--no-ext-diff",
+            "--no-textconv",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
             "--end-of-options",
             base,
             "--",
@@ -336,10 +403,14 @@ fn git_diff_lines(
         return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
     }
 
-    let text = String::from_utf8_lossy(&output.stdout);
+    parse_diff_lines(&String::from_utf8_lossy(&output.stdout))
+}
+
+fn parse_diff_lines(text: &str) -> Result<BTreeMap<String, LineScope>, String> {
     let mut files: BTreeMap<String, LineScope> = BTreeMap::new();
     let mut current: Option<String> = None;
-    for line in text.lines() {
+    let mut lines = text.lines();
+    while let Some(line) = lines.next() {
         if let Some(path) = line.strip_prefix("+++ ") {
             let path = path.trim_end_matches(['\t', '\r']);
             current = if path == "/dev/null" {
@@ -357,16 +428,52 @@ fn git_diff_lines(
         if !line.starts_with("@@") {
             continue;
         }
-        let Some(path) = current.as_ref() else {
-            continue;
-        };
-        let Some((start, count)) = parse_hunk(line) else {
-            continue;
-        };
-        let Some(LineScope::Added(lines)) = files.get_mut(path) else {
-            continue;
-        };
-        lines.extend(start..start + count);
+        let (old_count, new_start, new_count) =
+            parse_hunk(line).ok_or_else(|| format!("invalid diff hunk: {line}"))?;
+        if new_count > 0 && current.is_none() {
+            return Err(format!("diff hunk has no destination file: {line}"));
+        }
+        let mut old_remaining = old_count;
+        let mut new_remaining = new_count;
+        let mut new_line = new_start;
+        while old_remaining > 0 || new_remaining > 0 {
+            let body = lines.next().ok_or_else(|| {
+                format!(
+                    "truncated hunk for {}",
+                    current.as_deref().unwrap_or("/dev/null")
+                )
+            })?;
+            match body.as_bytes().first() {
+                Some(b' ') => {
+                    if old_remaining == 0 || new_remaining == 0 {
+                        return Err(format!("diff hunk line counts do not match: {line}"));
+                    }
+                    old_remaining -= 1;
+                    new_remaining -= 1;
+                    new_line += 1;
+                }
+                Some(b'+') => {
+                    if new_remaining == 0 {
+                        return Err(format!("diff hunk has too many added lines: {line}"));
+                    }
+                    if let Some(path) = current.as_ref()
+                        && let Some(LineScope::Added(lines)) = files.get_mut(path)
+                    {
+                        lines.insert(new_line);
+                    }
+                    new_remaining -= 1;
+                    new_line += 1;
+                }
+                Some(b'-') => {
+                    if old_remaining == 0 {
+                        return Err(format!("diff hunk has too many deleted lines: {line}"));
+                    }
+                    old_remaining -= 1;
+                }
+                Some(b'\\') => {}
+                _ => return Err(format!("invalid diff hunk body: {body}")),
+            }
+        }
     }
     Ok(files)
 }
@@ -411,9 +518,19 @@ fn decode_git_path(path: &str) -> String {
     String::from_utf8_lossy(&output).into_owned()
 }
 
-fn parse_hunk(line: &str) -> Option<(usize, usize)> {
-    let range = line.split_whitespace().find(|part| part.starts_with('+'))?;
-    let range = range.trim_start_matches('+');
+fn parse_hunk(line: &str) -> Option<(usize, usize, usize)> {
+    let mut parts = line.strip_prefix("@@ ")?.split_whitespace();
+    let old = parts.next()?.strip_prefix('-')?;
+    let new = parts.next()?.strip_prefix('+')?;
+    if parts.next()? != "@@" {
+        return None;
+    }
+    let (_, old_count) = parse_hunk_range(old)?;
+    let (new_start, new_count) = parse_hunk_range(new)?;
+    Some((old_count, new_start, new_count))
+}
+
+fn parse_hunk_range(range: &str) -> Option<(usize, usize)> {
     let (start, count) = range.split_once(',').unwrap_or((range, "1"));
     Some((start.parse().ok()?, count.parse().ok()?))
 }
@@ -446,7 +563,24 @@ fn git_untracked(
 
 #[cfg(test)]
 mod tests {
-    use super::decode_git_path;
+    use super::{LineScope, decode_git_path, parse_diff_lines};
+
+    #[test]
+    fn parses_added_lines_next_to_no_newline_markers() {
+        let patch = "diff --git a/sample.py b/sample.py\n--- a/sample.py\n+++ b/sample.py\n@@ -1 +1,2 @@\n value = 0\n+global_counter = 0\n\\ No newline at end of file\n";
+        let files = parse_diff_lines(patch).unwrap();
+        let Some(LineScope::Added(lines)) = files.get("sample.py") else {
+            panic!("missing sample.py diff scope");
+        };
+        assert_eq!(lines.iter().copied().collect::<Vec<_>>(), vec![2]);
+    }
+
+    #[test]
+    fn rejects_truncated_hunks() {
+        let patch = "diff --git a/sample.py b/sample.py\n--- a/sample.py\n+++ b/sample.py\n@@ -0,0 +1,2 @@\n+first\n";
+        let error = parse_diff_lines(patch).unwrap_err();
+        assert!(error.contains("truncated hunk"), "{error}");
+    }
 
     #[test]
     fn decodes_quoted_git_paths() {

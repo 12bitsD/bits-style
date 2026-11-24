@@ -74,7 +74,9 @@ bits style report src --format sarif
 bits style report src --jobs 8 --include-passed
 ```
 
-`--changed` 和 `--staged` 扫描整个文件。`--diff` 只报告新增/修改行相关的违规，默认相对 `HEAD`；`--commit` 可指定 SHA、分支、tag 或 `HEAD~n`。未跟踪文件按全文件检查，纯删除且没有新增行的文件不进入扫描。
+`--changed` 和 `--staged` 扫描整个文件。`--diff` 只报告新增/修改行相关的违规，默认相对 `HEAD`；`--commit` 可指定 SHA、分支、tag 或 `HEAD~n`。未跟踪文件按全文件检查，纯删除且没有新增行的文件不进入扫描。patch 无法可靠解析时返回 2，不会降级为通过。
+
+`--diff` 会按需读取本地 import 可达的未变更文件，用于发现新增依赖环。这些上下文文件不计入扫描数量，其存量违规和解析错误也不会进入 diff 报告；这不代表全仓检查通过。
 
 ### 行级豁免
 
@@ -112,7 +114,7 @@ bits style check . --config bits.toml
 
 ## 自动修复边界
 
-`fix` 只处理 Profile 缩进、行尾空白和文件末尾换行，不改变字符串内容。它不会重命名、删除代码、拆分函数、修改依赖或改变控制流。修复后必须重新扫描，连续执行两次不得产生新的 diff。
+`fix` 只处理 Profile 缩进、行尾空白和文件末尾换行，不改变字符串内容。它不会重命名、删除代码、拆分函数、修改依赖或改变控制流。diff 模式只修改新增行；文件末尾换行也只有最后一行属于新增行时才修复。修复后必须重新扫描，连续执行两次不得产生新的 diff。
 
 ## 退出码
 
@@ -130,7 +132,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-85 个测试直接驱动真实 CLI，覆盖规则边界、Profile、diff-only、指定 commit、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等。
+101 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
 
 ## License
 

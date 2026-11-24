@@ -12,6 +12,7 @@ type IgnoredRanges<'a> = (&'a [Range<usize>], &'a [Range<usize>], &'a [Range<usi
 
 #[derive(Debug, Clone)]
 pub struct ImportRecord {
+    pub language: Language,
     pub specifier: String,
     pub binding: Option<String>,
     pub line: usize,
@@ -149,7 +150,7 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             | "import_declaration"
             | "preproc_include"
             | "use_declaration" => {
-                analyze_import(language, relative, source, node, &mut result);
+                analyze_import(language, relative, source, node, &mut result, true);
             }
             "class_definition"
             | "class_declaration"
@@ -289,6 +290,23 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         }
     }
     result
+}
+
+pub fn analyze_imports(language: Language, source: &str, tree: &Tree) -> Vec<ImportRecord> {
+    let mut result = SyntaxAnalysis::default();
+    visit(tree.root_node(), &mut |node| {
+        if matches!(
+            node.kind(),
+            "import_statement"
+                | "import_from_statement"
+                | "import_declaration"
+                | "preproc_include"
+                | "use_declaration"
+        ) {
+            analyze_import(language, "", source, node, &mut result, false);
+        }
+    });
+    result.imports
 }
 
 fn analyze_function(
@@ -1198,17 +1216,26 @@ fn analyze_import(
     source: &str,
     node: Node,
     result: &mut SyntaxAnalysis,
+    diagnostics: bool,
 ) {
     let text = node_text(source, node).trim();
-    let masked = mask_ranges(
-        source,
-        &result.strings,
-        &result.comments,
-        &result.interpolations,
-    );
-    let reexports = python_reexports(source);
+    let masked = if diagnostics {
+        mask_ranges(
+            source,
+            &result.strings,
+            &result.comments,
+            &result.interpolations,
+        )
+    } else {
+        String::new()
+    };
+    let reexports = if diagnostics {
+        python_reexports(source)
+    } else {
+        BTreeSet::new()
+    };
     let mut record = |specifier: String, binding: Option<String>, type_only: bool| {
-        if binding.as_deref() == Some("*") || text.contains("import *") {
+        if diagnostics && (binding.as_deref() == Some("*") || text.contains("import *")) {
             push(
                 &mut result.violations,
                 relative,
@@ -1219,7 +1246,8 @@ fn analyze_import(
                 "explicit_imports",
             );
         }
-        if let Some(name) = binding.as_deref()
+        if diagnostics
+            && let Some(name) = binding.as_deref()
             && name != "*"
             && !reexports.contains(name)
             && !is_likely_trait_name(name)
@@ -1236,6 +1264,7 @@ fn analyze_import(
             );
         }
         result.imports.push(ImportRecord {
+            language,
             specifier,
             binding,
             line: node.start_position().row + 1,
@@ -2436,6 +2465,9 @@ pub fn dependency_path(import: &ImportRecord) -> Option<String> {
     if import.type_only {
         return None;
     }
+    if import.language == Language::Python {
+        return python_dependency_path(import);
+    }
     if import.specifier.starts_with("crate::") {
         return Some(format!(
             "src/{}",
@@ -2468,6 +2500,33 @@ pub fn dependency_path(import: &ImportRecord) -> Option<String> {
         Some(specifier.to_owned())
     } else {
         None
+    }
+}
+
+fn python_dependency_path(import: &ImportRecord) -> Option<String> {
+    let specifier = import.specifier.trim();
+    if specifier.is_empty() {
+        return None;
+    }
+    let dots = specifier
+        .chars()
+        .take_while(|character| *character == '.')
+        .count();
+    if dots == 0 {
+        return Some(format!("/{}", specifier.replace('.', "/")));
+    }
+
+    let prefix = "../".repeat(dots - 1);
+    let module = &specifier[dots..];
+    if !module.is_empty() {
+        return Some(format!("{prefix}{}", module.replace('.', "/")));
+    }
+    match import.binding.as_deref() {
+        Some(binding) if !binding.is_empty() && binding != "*" => {
+            Some(format!("{prefix}{binding}"))
+        }
+        _ if prefix.is_empty() => Some(".".to_owned()),
+        _ => Some(prefix.trim_end_matches('/').to_owned()),
     }
 }
 

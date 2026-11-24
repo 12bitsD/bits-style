@@ -153,6 +153,83 @@ fn fix_diff_only_changes_added_lines() {
 }
 
 #[test]
+fn fix_diff_preserves_an_unchanged_missing_eof_newline() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("sample.py");
+    fs::write(&file, "def outer():\n    return 0").unwrap();
+    init_repo(root);
+    let changed = "def outer():\n    value = 1\n    return 0";
+    fs::write(&file, changed).unwrap();
+
+    let output = bits(&[
+        "style",
+        "fix",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&file).unwrap(), changed);
+    let report = json(&output);
+    assert_eq!(report["summary"]["violations_fixed"], 0);
+    assert!(!report["fixes"][0]["fixed"].as_bool().unwrap());
+    assert!(
+        report["fixes"][0]["applied_fixes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
+fn fix_diff_repairs_an_added_eof_line_idempotently() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("sample.py");
+    fs::write(&file, "def outer():\n    return 0\n").unwrap();
+    init_repo(root);
+    fs::write(&file, "def outer():\n    value = 1\n    return value").unwrap();
+
+    let first = bits(&[
+        "style",
+        "fix",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(first.status.code(), Some(0));
+    let fixed = fs::read_to_string(&file).unwrap();
+    assert_eq!(fixed, "def outer():\n    value = 1\n    return value\n");
+    let first_report = json(&first);
+    assert_eq!(first_report["summary"]["violations_fixed"], 1);
+    assert!(first_report["fixes"][0]["fixed"].as_bool().unwrap());
+    assert_eq!(first_report["fixes"][0]["applied_fixes"][0]["count"], 1);
+
+    let second = bits(&[
+        "style",
+        "fix",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(second.status.code(), Some(0));
+    assert_eq!(fs::read_to_string(&file).unwrap(), fixed);
+    let second_report = json(&second);
+    assert!(!second_report["fixes"][0]["fixed"].as_bool().unwrap());
+    assert_eq!(second_report["summary"]["violations_fixed"], 0);
+    assert!(
+        second_report["fixes"][0]["applied_fixes"]
+            .as_array()
+            .unwrap()
+            .is_empty()
+    );
+}
+
+#[test]
 fn commit_options_are_rejected_instead_of_silently_passing() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();

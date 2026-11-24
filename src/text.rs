@@ -222,7 +222,11 @@ pub fn fix(
     }
 
     let mut newline_fixes = 0;
-    if !output.is_empty() && !output.ends_with('\n') {
+    let can_fix_newline = match line_scope {
+        LineScope::WholeFile => true,
+        LineScope::Added(lines) => lines.contains(&source.lines().count()),
+    };
+    if can_fix_newline && !output.is_empty() && !output.ends_with('\n') {
         output.push('\n');
         newline_fixes = 1;
     }

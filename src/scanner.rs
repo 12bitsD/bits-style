@@ -146,13 +146,28 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
     let discovery = discovery::discover(&inputs, scope, args.no_ignore, &config.exclude)?;
     let files = discovery.files;
     let unsupported = discovery.unsupported;
+    let dependency_context = discovery.dependency_context;
     let is_fix = matches!(action, StyleCommand::Fix(_));
     let is_report = matches!(action, StyleCommand::Report(_));
 
     let mut report = if is_fix {
-        let before = scan_report(&files, args.jobs, false, &unsupported);
+        let before = scan_report(
+            &files,
+            &dependency_context,
+            args.jobs,
+            false,
+            &unsupported,
+            args.diff,
+        );
         let mut fixes = apply_fixes(&files)?;
-        let mut after = scan_report(&files, args.jobs, args.include_passed, &unsupported);
+        let mut after = scan_report(
+            &files,
+            &dependency_context,
+            args.jobs,
+            args.include_passed,
+            &unsupported,
+            args.diff,
+        );
         for fix in &mut fixes {
             fix.remaining_violations = after
                 .results
@@ -169,7 +184,14 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
         after.finish();
         after
     } else {
-        scan_report(&files, args.jobs, args.include_passed, &unsupported)
+        scan_report(
+            &files,
+            &dependency_context,
+            args.jobs,
+            args.include_passed,
+            &unsupported,
+            args.diff,
+        )
     };
     if let Some(path) = &args.baseline {
         let baseline = load_baseline(path)?;
@@ -267,11 +289,14 @@ fn apply_baseline(report: &mut Report, baseline: &Baseline) {
 
 fn scan_report(
     files: &[DiscoveredFile],
+    dependency_context: &[DiscoveredFile],
     jobs: usize,
     include_passed: bool,
     unsupported: &[String],
+    diff_mode: bool,
 ) -> Report {
     let scans = scan_files(files, jobs);
+    let dependency_scans = scan_dependency_context(&scans, dependency_context);
     let mut report = Report::new();
     report.summary.files_discovered = files.len();
     report.summary.files_scanned = files.len();
@@ -301,8 +326,8 @@ fn scan_report(
             .executed
             .extend(["BCS001", "BCS002", "BCS015"].map(str::to_owned));
     }
-    check_dependency_cycles(&scans, &mut report.results);
-    filter_diff_violations(&scans, &mut report.results);
+    check_dependency_cycles(&scans, &dependency_scans, diff_mode, &mut report.results);
+    filter_diff_violations(&scans, diff_mode, &mut report.results);
     report.finish();
 
     if include_passed {
@@ -355,6 +380,66 @@ fn scan_files(files: &[DiscoveredFile], jobs: usize) -> Vec<FileScan> {
         }
     });
     output
+}
+
+fn scan_dependency_context(scans: &[FileScan], files: &[DiscoveredFile]) -> Vec<FileScan> {
+    let context: BTreeMap<&str, &DiscoveredFile> = files
+        .iter()
+        .map(|file| (file.relative.as_str(), file))
+        .collect();
+    let known: BTreeSet<&str> = scans
+        .iter()
+        .map(|scan| scan.relative.as_str())
+        .chain(context.keys().copied())
+        .collect();
+    let mut visited: BTreeSet<String> = scans.iter().map(|scan| scan.relative.clone()).collect();
+    let mut pending = Vec::new();
+    for scan in scans {
+        for import in &scan.imports {
+            let Some(specifier) = analyze::dependency_path(import) else {
+                continue;
+            };
+            if let Some(target) = resolve_dependency(&scan.relative, &specifier, &known) {
+                pending.push(target.to_owned());
+            }
+        }
+    }
+
+    let mut output = Vec::new();
+    while let Some(relative) = pending.pop() {
+        if !visited.insert(relative.clone()) {
+            continue;
+        }
+        let Some(file) = context.get(relative.as_str()) else {
+            continue;
+        };
+        let Some(imports) = scan_imports(file) else {
+            continue;
+        };
+        for import in &imports {
+            let Some(specifier) = analyze::dependency_path(import) else {
+                continue;
+            };
+            if let Some(target) = resolve_dependency(&relative, &specifier, &known) {
+                pending.push(target.to_owned());
+            }
+        }
+        output.push(FileScan {
+            relative,
+            imports,
+            ..FileScan::default()
+        });
+    }
+    output
+}
+
+fn scan_imports(file: &DiscoveredFile) -> Option<Vec<ImportRecord>> {
+    let source = std::fs::read_to_string(&file.absolute).ok()?;
+    let tree = file.language.parse(&source).ok()?;
+    if tree.root_node().has_error() {
+        return None;
+    }
+    Some(analyze::analyze_imports(file.language, &source, &tree))
 }
 
 fn scan_file(file: &DiscoveredFile) -> FileScan {
@@ -446,29 +531,35 @@ fn apply_fixes(files: &[DiscoveredFile]) -> Result<Vec<FileFix>, String> {
     Ok(records)
 }
 
-fn filter_diff_violations(scans: &[FileScan], violations: &mut Vec<Violation>) {
+fn filter_diff_violations(scans: &[FileScan], diff_mode: bool, violations: &mut Vec<Violation>) {
+    if !diff_mode {
+        return;
+    }
     let scopes: BTreeMap<&str, &LineScope> = scans
         .iter()
         .map(|scan| (scan.relative.as_str(), &scan.line_scope))
         .collect();
-    let has_diff = scans
-        .iter()
-        .any(|scan| matches!(scan.line_scope, LineScope::Added(_)));
     violations.retain(|violation| match scopes.get(violation.file.as_str()) {
         Some(LineScope::Added(lines)) => lines
             .range(violation.range.start.line..=violation.range.end.line)
             .next()
             .is_some(),
         Some(LineScope::WholeFile) => true,
-        None => !has_diff,
+        None => false,
     });
 }
 
-fn check_dependency_cycles(scans: &[FileScan], violations: &mut Vec<Violation>) {
-    let known: BTreeSet<&str> = scans.iter().map(|scan| scan.relative.as_str()).collect();
+fn check_dependency_cycles(
+    scans: &[FileScan],
+    context: &[FileScan],
+    diff_mode: bool,
+    violations: &mut Vec<Violation>,
+) {
+    let all: Vec<&FileScan> = scans.iter().chain(context.iter()).collect();
+    let known: BTreeSet<&str> = all.iter().map(|scan| scan.relative.as_str()).collect();
     let mut graph: BTreeMap<&str, Vec<&str>> = BTreeMap::new();
     let mut edges = BTreeMap::new();
-    for scan in scans {
+    for scan in all {
         for import in &scan.imports {
             let Some(specifier) = analyze::dependency_path(import) else {
                 continue;
@@ -480,43 +571,92 @@ fn check_dependency_cycles(scans: &[FileScan], violations: &mut Vec<Violation>) 
         }
     }
 
-    let mut state = BTreeMap::new();
-    let mut stack = Vec::new();
-    let mut emitted = BTreeSet::new();
-    for scan in scans {
-        visit_cycle(
-            &scan.relative,
-            &graph,
-            &edges,
-            &mut state,
-            &mut stack,
-            &mut emitted,
-            violations,
-        );
+    if diff_mode {
+        report_diff_cycles(scans, &graph, &edges, violations);
+        return;
     }
+
+    let mut search = CycleSearch {
+        state: BTreeMap::new(),
+        stack: Vec::new(),
+        emitted: BTreeSet::new(),
+    };
+    for scan in scans {
+        visit_cycle(&scan.relative, &graph, &edges, &mut search, violations);
+    }
+}
+
+fn report_diff_cycles<'a>(
+    scans: &[FileScan],
+    graph: &BTreeMap<&'a str, Vec<&'a str>>,
+    edges: &BTreeMap<(&'a str, &'a str), &ImportRecord>,
+    violations: &mut Vec<Violation>,
+) {
+    let changed: BTreeSet<&str> = scans.iter().map(|scan| scan.relative.as_str()).collect();
+    for ((from, to), import) in edges {
+        let from = *from;
+        let to = *to;
+        if changed.contains(from) && dependency_reaches(graph, to, from) {
+            violations.push(Violation::new(
+                "BCS014",
+                from,
+                import.line,
+                import.column,
+                "dependency cycle detected",
+                format!("{from} -> {to}"),
+                "acyclic_dependencies",
+                false,
+            ));
+        }
+    }
+}
+
+fn dependency_reaches<'a>(
+    graph: &BTreeMap<&'a str, Vec<&'a str>>,
+    start: &'a str,
+    target: &'a str,
+) -> bool {
+    let mut pending = vec![start];
+    let mut visited = BTreeSet::new();
+    while let Some(node) = pending.pop() {
+        if node == target {
+            return true;
+        }
+        if !visited.insert(node) {
+            continue;
+        }
+        if let Some(targets) = graph.get(node) {
+            pending.extend(targets.iter().copied());
+        }
+    }
+    false
+}
+
+struct CycleSearch<'a> {
+    state: BTreeMap<&'a str, usize>,
+    stack: Vec<&'a str>,
+    emitted: BTreeSet<String>,
 }
 
 fn visit_cycle<'a>(
     file: &'a str,
     graph: &BTreeMap<&'a str, Vec<&'a str>>,
     edges: &BTreeMap<(&'a str, &'a str), &ImportRecord>,
-    state: &mut BTreeMap<&'a str, usize>,
-    stack: &mut Vec<&'a str>,
-    emitted: &mut BTreeSet<String>,
+    search: &mut CycleSearch<'a>,
     violations: &mut Vec<Violation>,
 ) {
-    if state.get(file) == Some(&2) {
+    if search.state.get(file) == Some(&2) {
         return;
     }
-    if state.get(file) == Some(&1) {
-        let Some(start) = stack.iter().position(|entry| *entry == file) else {
+    if search.state.get(file) == Some(&1) {
+        let Some(start) = search.stack.iter().position(|entry| *entry == file) else {
             return;
         };
-        let mut cycle = stack[start..].to_vec();
+        let mut cycle = search.stack[start..].to_vec();
         cycle.sort();
         let key = cycle.join("->");
-        if emitted.insert(key) {
-            let from = stack.last().copied().unwrap_or(file);
+        if search.emitted.insert(key) {
+            let from = search.stack.last().copied().unwrap_or(file);
             if let Some(import) = edges.get(&(from, file)) {
                 violations.push(Violation::new(
                     "BCS014",
@@ -532,15 +672,15 @@ fn visit_cycle<'a>(
         }
         return;
     }
-    state.insert(file, 1);
-    stack.push(file);
+    search.state.insert(file, 1);
+    search.stack.push(file);
     if let Some(targets) = graph.get(file) {
         for target in targets {
-            visit_cycle(target, graph, edges, state, stack, emitted, violations);
+            visit_cycle(target, graph, edges, search, violations);
         }
     }
-    stack.pop();
-    state.insert(file, 2);
+    search.stack.pop();
+    search.state.insert(file, 2);
 }
 
 fn resolve_dependency<'a>(
@@ -549,7 +689,10 @@ fn resolve_dependency<'a>(
     known: &BTreeSet<&'a str>,
 ) -> Option<&'a str> {
     let parent = Path::new(current).parent().unwrap_or(Path::new(""));
-    let joined = normalize_path(&parent.join(specifier));
+    let joined = specifier.strip_prefix('/').map_or_else(
+        || normalize_path(&parent.join(specifier)),
+        |relative| normalize_path(Path::new(relative)),
+    );
     let base = joined.to_string_lossy().replace('\\', "/");
     let candidates = if Path::new(&base).extension().is_some() {
         vec![base.clone()]
@@ -563,7 +706,9 @@ fn resolve_dependency<'a>(
             format!("{base}.rs"),
             format!("{base}/mod.rs"),
             format!("{base}/index.ts"),
+            format!("{base}/index.tsx"),
             format!("{base}/index.js"),
+            format!("{base}/index.jsx"),
             format!("{base}/__init__.py"),
         ]
     };

@@ -593,6 +593,204 @@ fn diff_checks_functions_whose_bodies_contain_added_lines() {
     }));
 }
 
+#[test]
+fn diff_detects_cycles_through_unchanged_dependency_context() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("a.ts"),
+        "export function aValue() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("b.ts"),
+        "import { aValue } from \"./a\";\n\nexport function bValue() {\n  return aValue();\n}\n\nconst contextPadding = \"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\";\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("old.ts"),
+        "import { legacyValue } from \"./legacy\";\n\nexport function oldValue() {\n  return legacyValue();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("legacy.ts"),
+        "import { oldValue } from \"./old\";\n\nexport function legacyValue() {\n  return oldValue();\n}\n",
+    )
+    .unwrap();
+    fs::write(root.join("broken.ts"), "export function (\n").unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-qm", "initial"]);
+    fs::write(
+        root.join("a.ts"),
+        "import { bValue } from \"./b\";\n\nexport function aValue() {\n  return bValue();\n}\n",
+    )
+    .unwrap();
+
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(1), "{output:?}");
+    let report = json(&output);
+    assert_eq!(report["summary"]["files_scanned"], 1, "{report:#}");
+    assert!(report["scan_errors"].as_array().unwrap().is_empty());
+    assert_eq!(report["results"].as_array().unwrap().len(), 1, "{report:#}");
+    assert_eq!(report["results"][0]["rule_id"], "BCS014");
+    assert_eq!(report["results"][0]["message"], "dependency cycle detected");
+    assert_eq!(report["results"][0]["file"], "a.ts");
+    assert_eq!(report["results"][0]["range"]["start"]["line"], 1);
+
+    let parallel = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--jobs",
+        "8",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(json(&parallel)["results"], report["results"]);
+}
+
+#[test]
+fn diff_checks_every_added_import_for_a_new_cycle() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("a.ts"),
+        "import { bValue } from \"./b\";\n\nexport function aValue() {\n  return bValue();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("b.ts"),
+        "import { cValue } from \"./c\";\n\nexport function bValue() {\n  return cValue();\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("c.ts"),
+        "import { aValue } from \"./a\";\n\nexport function cValue() {\n  return aValue();\n}\n",
+    )
+    .unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-qm", "initial"]);
+    fs::write(
+        root.join("a.ts"),
+        "import { bValue } from \"./b\";\nimport { cValue } from \"./c\";\n\nexport function aValue() {\n  return bValue() + cValue();\n}\n",
+    )
+    .unwrap();
+
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    let report = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{report:#}");
+    assert_eq!(report["results"].as_array().unwrap().len(), 1, "{report:#}");
+    assert_eq!(report["results"][0]["rule_id"], "BCS014");
+    assert_eq!(report["results"][0]["file"], "a.ts");
+    assert_eq!(report["results"][0]["range"]["start"]["line"], 2);
+}
+
+#[test]
+fn diff_resolves_python_relative_and_absolute_modules() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("pkg")).unwrap();
+    fs::write(root.join("pkg/__init__.py"), "").unwrap();
+    fs::write(root.join("pkg/a.py"), "def a_value():\n    return 1\n").unwrap();
+    fs::write(
+        root.join("pkg/b.py"),
+        "from pkg.a import a_value\n\n\ndef b_value():\n    return a_value()\n",
+    )
+    .unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-qm", "initial"]);
+    fs::write(
+        root.join("pkg/a.py"),
+        "from .b import b_value\n\n\ndef a_value():\n    return b_value()\n",
+    )
+    .unwrap();
+
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    let report = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{report:#}");
+    assert!(report["results"].as_array().unwrap().iter().any(|result| {
+        result["rule_id"] == "BCS014"
+            && result["message"] == "dependency cycle detected"
+            && result["file"] == "pkg/a.py"
+            && result["range"]["start"]["line"] == 1
+    }));
+}
+
+#[test]
+fn diff_resolves_tsx_directory_index_modules() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::create_dir(root.join("component")).unwrap();
+    fs::write(
+        root.join("importer.ts"),
+        "export function importerValue() {\n  return 1;\n}\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("component/index.tsx"),
+        "import { importerValue } from \"../importer\";\n\nexport function componentValue() {\n  return importerValue();\n}\n",
+    )
+    .unwrap();
+    run_git(root, &["init", "-q"]);
+    run_git(root, &["config", "user.email", "bits@example.invalid"]);
+    run_git(root, &["config", "user.name", "Bits Tests"]);
+    run_git(root, &["add", "."]);
+    run_git(root, &["commit", "-qm", "initial"]);
+    fs::write(
+        root.join("importer.ts"),
+        "import { componentValue } from \"./component\";\n\nexport function importerValue() {\n  return componentValue();\n}\n",
+    )
+    .unwrap();
+
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    let report = json(&output);
+    assert_eq!(output.status.code(), Some(1), "{report:#}");
+    assert!(report["results"].as_array().unwrap().iter().any(|result| {
+        result["rule_id"] == "BCS014"
+            && result["message"] == "dependency cycle detected"
+            && result["file"] == "importer.ts"
+            && result["range"]["start"]["line"] == 1
+    }));
+}
+
 fn git_output(root: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .current_dir(root)
