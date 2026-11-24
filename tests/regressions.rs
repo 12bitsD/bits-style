@@ -444,6 +444,78 @@ fn diff_does_not_walk_unrelated_directories_for_dependency_context() {
     assert_eq!(report["summary"]["files_scanned"], 1);
 }
 
+#[test]
+fn hard_function_violations_have_high_confidence() {
+    let nested = "function nested(value) {\n  if (value) {\n    for (const item of value) {\n      while (item) {\n        if (item) {\n          return 1;\n        }\n      }\n    }\n  }\n  return 0;\n}\n";
+    let results = scan("js", nested);
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS003"
+            && result["severity"] == "violation"
+            && result["confidence"] == "high"
+    }));
+
+    let complex = format!(
+        "function complex(value) {{\n{}  return value;\n}}\n",
+        "  if (value) {\n    value += 1;\n  }\n".repeat(10)
+    );
+    let results = scan("js", &complex);
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS003"
+            && result["severity"] == "violation"
+            && result["confidence"] == "high"
+    }));
+
+    let results = scan(
+        "ts",
+        "function run(enabled: boolean) {\n  return enabled;\n}\n",
+    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS004"
+            && result["severity"] == "violation"
+            && result["confidence"] == "high"
+    }));
+
+    let results = scan(
+        "ts",
+        "function sum(a: number, b: number, c: number, d: number, e: number) {\n  return a + b + c + d + e;\n}\n",
+    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS004"
+            && result["severity"] == "warning"
+            && result["confidence"] == "high"
+    }));
+}
+
+#[test]
+fn bcs003_text_report_prompts_for_concrete_explanation() {
+    let directory = tempfile::tempdir().unwrap();
+    let plain = directory.path().join("plain.py");
+    let body = "    value = 1\n".repeat(49);
+    fs::write(
+        &plain,
+        format!("def plain() -> int:\n{body}    return value\n"),
+    )
+    .unwrap();
+    let output = bits(&["style", "check", plain.to_str().unwrap()]);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains(
+        "hint: split by responsibility, or add bits:explain(BCS003): <mechanism>; <shared invariant>; <splitting risk>"
+    ));
+
+    let explained = directory.path().join("explained.py");
+    fs::write(
+        &explained,
+        format!(
+            "# bits:explain(BCS003): state transition; cursor and checksum mutate together; splitting splits the lock\ndef explained() -> int:\n{body}    return value\n"
+        ),
+    )
+    .unwrap();
+    let output = bits(&["style", "check", explained.to_str().unwrap()]);
+    let text = String::from_utf8_lossy(&output.stdout);
+    assert!(text.contains("explanation: state transition; cursor and checksum mutate together; splitting splits the lock"));
+    assert!(!text.contains("hint: split by responsibility"));
+}
+
 fn init_diff_repo(root: &Path) {
     run_git(root, &["init", "-q"]);
     run_git(root, &["config", "user.email", "bits@example.invalid"]);

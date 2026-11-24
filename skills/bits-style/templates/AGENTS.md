@@ -1,6 +1,6 @@
 # Bits’s Coding Style
 
-Version: v0.3.5.
+Version: v0.3.6.
 
 Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bitsD/bits-style.
 
@@ -16,7 +16,8 @@ Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bits
 
 - Do not perform whole-repository mechanical rewrites to reach zero violations.
 - Do not change external JSON, Pydantic, FFI, ABI or framework callback contracts to satisfy a rule.
-- Do not split cohesive logic just to satisfy a line or variable threshold. `bits:explain(BCS003)` is a last resort, not the default fix.
+- Do not split cohesive logic just to satisfy a line or variable threshold. `bits:explain(BCS003)` is a last resort for size warnings, must name concrete shared invariants and splitting risks (no boilerplate), and never waives hard complexity violations.
+- Do not mirror downstream SDK/model parameter validation in pass-through layers; validate only module-owned invariants and wrap/forward downstream errors. Prefer declarative schemas over string-key `if/elif` chains.
 - Use `bits:allow(rule): reason` only for real contracts or low-confidence cases, with a specific reason. No blanket suppressions.
 - `unsupported` is not passed. `warning` is not a hard failure. Compile errors, formatter errors and real test failures remain hard failures.
 - A task is complete only when the same scanner reports no new high-confidence violation, all project checks pass, and remaining warnings/unsupported items are reported honestly.

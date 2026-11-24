@@ -63,7 +63,7 @@ C/C++ 保留 Tab 8 和函数换行大括号；Python/Rust 使用 4 空格；Java
 
 ## Warning、React 与 Unsupported
 
-- BCS003 的行数和局部变量输出 warning，真实嵌套和圈复杂度仍为硬错误；优先按阶段拆分，只有必须保持内聚时才使用 `bits:explain(BCS003): 职责；内聚原因；拆分风险`。
+- BCS003 的行数和局部变量输出 warning，真实嵌套和圈复杂度仍为硬错误；优先按阶段拆分，只有必须保持内聚时才使用 `bits:explain(BCS003): 具体机制；共享约束；拆分风险`（不豁免硬错误，不接受空话套话）。
 - React 组件自动接受 PascalCase 和展示型布尔 props；JSX 区域交给 formatter，TSX 保守提示不阻断 CI。
 - `severity = violation` 才返回 1；warning 只进入报告。`report` 展示全部结果。
 - Go 等未适配文件进入 `unsupported` 列表，`check` 返回 2；Rust 已适配的部分按 `partial` 明确报告，不再形成“未覆盖却 passed”。
@@ -173,7 +173,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-101 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
+103 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
 
 ## License
 

@@ -38,6 +38,10 @@ fn text(report: &Report, include_passed: bool) -> String {
         ));
         if let Some(explanation) = &violation.explanation {
             output.push_str(&format!("  explanation: {explanation}\n"));
+        } else if violation.rule_id == "BCS003" && violation.severity == "warning" {
+            output.push_str(
+                "  hint: split by responsibility, or add bits:explain(BCS003): <mechanism>; <shared invariant>; <splitting risk>\n",
+            );
         }
     }
     for error in &report.scan_errors {

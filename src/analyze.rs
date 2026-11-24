@@ -352,7 +352,7 @@ fn analyze_function(
             "<=3",
         );
         if let Some(violation) = violations.last_mut() {
-            violation.severity = "violation".to_owned();
+            violation.mark_high_confidence_violation();
         }
     }
 
@@ -367,7 +367,7 @@ fn analyze_function(
             "<=10",
         );
         if let Some(violation) = violations.last_mut() {
-            violation.severity = "violation".to_owned();
+            violation.mark_high_confidence_violation();
         }
     }
 
@@ -2372,7 +2372,7 @@ fn push_function_contract(
 ) {
     push_function(violations, relative, node, rule, message, actual, expected);
     if let Some(violation) = violations.last_mut() {
-        violation.severity = "violation".to_owned();
+        violation.mark_high_confidence_violation();
     }
 }
 

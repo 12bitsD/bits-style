@@ -24,7 +24,7 @@ Canonical references:
 
 Resolve these before acting:
 
-- `bits` executable and its version. The current integration version is `v0.3.5`.
+- `bits` executable and its version. The current integration version is `v0.3.6`.
 - Repository root and the Git revision used for comparisons, normally `origin/main`.
 - Whether this is first adoption, incremental work, or CI hard-gate adoption.
 - Existing language formatters and tests. Bits supplements them.
@@ -80,8 +80,12 @@ For semantic violations, prefer the smallest change that removes the actual prob
 For `BCS003`, prefer splitting by responsibility only when that reduces cognitive load. Use `bits:explain(BCS003)` only when the function must remain cohesive:
 
 ```text
-bits:explain(BCS003): <responsibility>; <why cohesion is required>; <splitting risk>
+bits:explain(BCS003): <concrete mechanism>; <shared state/resource/ordering invariant>; <concrete splitting risk>
 ```
+
+Reject boilerplate explanations such as `single validation table`, `too complex`, or `split scatters rules`. `bits:explain` documents size warnings; it does not waive nesting or cyclomatic-complexity violations. If the logic can be replaced by a declarative schema/table or deleted, do that instead of explaining it.
+
+For pass-through layers, check whether parameter validation duplicates a downstream SDK/model/service contract. Keep only invariants owned by this module (reserved keys, auth, structural envelope); let downstream validation reject invalid provider parameters and wrap/forward the original error at the boundary. When local validation or normalization is required, prefer a declarative schema over string-key `if/elif` chains.
 
 Use `bits:allow(<rule>): <reason>` only for a real contract or low-confidence case, with the rule id and a concrete reason. Do not add blanket suppressions.
 

@@ -87,6 +87,11 @@ impl Violation {
             explanation: None,
         }
     }
+
+    pub fn mark_high_confidence_violation(&mut self) {
+        self.severity = "violation".to_owned();
+        self.confidence = "high".to_owned();
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

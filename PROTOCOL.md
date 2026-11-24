@@ -64,7 +64,7 @@ bits style check --diff --commit 61a5793 src
 - `severity = violation`：确定违规，`check` 返回 1。真实嵌套、圈复杂度、空 catch、真实参数重赋值、依赖环和不可达代码属于此类。
 - `severity = warning`：需要人工判断的提示，不阻断 CI。BCS003 的行数/局部变量、TSX 保守格式提示和无法确认边界的 catch-all 转换属于此类。
 - `confidence = high|low`：描述判定置信度，不代替 severity。
-- `explanation`：可选的函数级说明，来自 `bits:explain(BCS003)`。
+- `explanation`：可选的函数级说明，来自 `bits:explain(BCS003)`；缺失时文本报告输出补充提示。升级为 `violation` 的函数级硬错误必须同时标记 `confidence = high`。
 - `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
 - `summary.warnings` 和 `summary.unsupported_files` 分别统计 warning 与 unsupported 文件。
 
@@ -119,7 +119,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.3.5" },
+  "tool": { "name": "bits", "version": "0.3.6" },
   "style": { "name": "Bits’s Coding Style", "version": "0.3" },
   "status": "warning",
   "coverage": {
