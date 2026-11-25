@@ -123,7 +123,7 @@ bits:prove(BCS003, test=test_lock): cursor 与 checksum 共享锁；拆分导致
   3. **未命中活跃 warning 的 `bits:prove`（墓碑注释）**；
   4. 使用 `bits:prove` 试图豁免 `severity = violation` 的硬错误；
   5. `--diff` 模式下新增 `bits:prove` 超过 **1** 条配额；
-  6. `bits:prove(..., test=X)` 中的 `X` 无法通过 AST 唯一解析到真实测试定义（Python `test_*`/`Test*.test_*`、TS `test()/it()`、Rust `#[test]`）；
+  6. `bits:prove(..., test=X)` 中的 `X` 无法通过 AST 唯一解析到真实测试定义（Python `test_*`/`Test*.test_*`、TS `test()/it()`、Rust `#[test]`、Go `Test*`/`Benchmark*`）；
   7. `--diff` 模式下新增 legacy `bits:explain`（存量全量扫描仍兼容）。
 - 禁止文件级、目录级 blanket suppression。
 
@@ -149,7 +149,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.4.2" },
+  "tool": { "name": "bits", "version": "0.5.0" },
   "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {

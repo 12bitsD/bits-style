@@ -19,3 +19,46 @@ url = "https://github.com/Textualize/rich.git"
 commit = "3a109ccdffe5b2d0e30684a304fbd388e99ce57b"
 path = "rich"
 exclude = ["**/_unicode_data/**"]
+
+# Rust golden corpus: API/macro design, systems/CLI engineering, async runtime.
+[[negative]]
+name = "serde"
+url = "https://github.com/serde-rs/serde.git"
+commit = "5be4690236e16d8a16d80f76703e59091ac3be2e"
+path = "serde_core/src"
+
+[[negative]]
+name = "ripgrep"
+url = "https://github.com/BurntSushi/ripgrep.git"
+commit = "3e85c6c148fdce38a99ceeb9d2780dc7b03b4a4f"
+path = "crates"
+exclude = ["**/tests/**"]
+
+[[negative]]
+name = "tokio"
+url = "https://github.com/tokio-rs/tokio.git"
+commit = "854013a8cb7d1397e9d037315592dc1d2d55187d"
+path = "tokio/src"
+exclude = ["**/tests/**"]
+
+# Go golden corpus: CLI command trees, zero-allocation logging, static analysis IR.
+[[negative]]
+name = "cobra"
+url = "https://github.com/spf13/cobra.git"
+commit = "adbc8813901bba65827259daa8e22ff94ec1f30e"
+path = "."
+exclude = ["*_test.go", "**/*_test.go", "**/doc/**", "**/site/**"]
+
+[[negative]]
+name = "zap"
+url = "https://github.com/uber-go/zap.git"
+commit = "4892335e05f14bce8a98a69a577fcf3844a42623"
+path = "."
+exclude = ["*_test.go", "**/*_test.go", "**/benchmarks/**", "internal/**", "**/internal/**"]
+
+[[negative]]
+name = "go-tools"
+url = "https://github.com/dominikh/go-tools.git"
+commit = "8371db75e9daf10073dc2ba684c2a24a1d6ead95"
+path = "go/ir"
+exclude = ["*_test.go", "**/*_test.go"]

@@ -24,7 +24,7 @@ Canonical references:
 
 Resolve these before acting:
 
-- `bits` executable and its version. The current integration version is `v0.4.2`.
+- `bits` executable and its version. The current integration version is `v0.5.0`.
 - Repository root and the Git revision used for comparisons, normally `origin/main`.
 - Whether this is first adoption, incremental work, or CI hard-gate adoption.
 - Existing language formatters and tests. Bits supplements them.

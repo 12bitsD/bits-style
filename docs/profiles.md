@@ -7,8 +7,8 @@ Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则�
 | C/C++ | clang-format | Tab 8 | `lower_snake_case` | 函数 `{` 下一行，控制块同行 | C 使用集中清理；C++ RAII，禁止 goto；非 void 返回值检查或显式丢弃 |
 | Python | ruff format | 4 Space | `lower_snake_case` | 不适用 | `with`、`raise`；显式忽略使用 `_ = call()` |
 | JavaScript/TypeScript/TSX | 项目既有 formatter + EditorConfig | 2 Space | `lowerCamelCase` | `{` 同行 | `try/finally`；显式忽略使用 `void call()` |
-| Rust | rustfmt | 4 Space | `lower_snake_case`，枚举成员 `PascalCase` | rustfmt | `Drop`、`?`；显式忽略使用 `let _ = call()`；unwrap/expect 为 warning |
-| Go | gofmt/goimports | gofmt 决定 | 导出 `PascalCase`，未导出 `lowerCamelCase` | gofmt | `defer`、`context`、显式 error 路径；禁止 goto |
+| Rust | rustfmt | 4 Space | `lower_snake_case`，枚举成员 `PascalCase` | rustfmt | `Drop`、`?`；显式忽略使用 `let _ = call()`；unwrap/expect/panic 交 Clippy `restriction`，unused import 交 `rustc` |
+| Go | gofmt/goimports | gofmt 决定 | 导出 `PascalCase`，未导出 `lowerCamelCase` | gofmt | `defer`、显式 error 路径；禁止 goto；Bits L1 检查 `context.Context` 首参及禁存 struct（warning） |
 
 ## 配置
 

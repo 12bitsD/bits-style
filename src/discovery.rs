@@ -172,7 +172,24 @@ fn finalize_files(
         let Some(language) = Language::from_path(&absolute) else {
             if matches!(
                 absolute.extension().and_then(|value| value.to_str()),
-                Some("rs" | "go")
+                Some(
+                    "java"
+                        | "kt"
+                        | "swift"
+                        | "rb"
+                        | "php"
+                        | "cs"
+                        | "scala"
+                        | "lua"
+                        | "zig"
+                        | "ex"
+                        | "exs"
+                        | "hs"
+                        | "ml"
+                        | "sh"
+                        | "bash"
+                        | "zsh"
+                )
             ) {
                 unsupported.push(relative);
             }

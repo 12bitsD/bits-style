@@ -128,6 +128,7 @@ struct RepoStats {
     functions: usize,
     warned_functions: usize,
     cognitive: Vec<usize>,
+    complexity_pairs: Vec<(usize, usize)>,
 }
 
 fn eval_negative(args: &BenchArgs, output: &mut String) -> Result<(usize, usize), String> {
@@ -142,6 +143,7 @@ fn eval_negative(args: &BenchArgs, output: &mut String) -> Result<(usize, usize)
         functions: 0,
         warned_functions: 0,
         cognitive: Vec::new(),
+        complexity_pairs: Vec::new(),
     };
     for repo in &manifest.negative {
         let stats = eval_repo(repo, &args.cache_dir, args.offline, output)?;
@@ -150,6 +152,7 @@ fn eval_negative(args: &BenchArgs, output: &mut String) -> Result<(usize, usize)
         total.functions += stats.functions;
         total.warned_functions += stats.warned_functions;
         total.cognitive.extend(stats.cognitive);
+        total.complexity_pairs.extend(stats.complexity_pairs);
     }
     render_cognitive_distribution(&total, output);
     Ok((total.violations, total.warnings))
@@ -197,6 +200,7 @@ fn eval_repo(
         functions: summary.functions_checked,
         warned_functions: summary.functions_with_warnings,
         cognitive: scan.cognitive_scores,
+        complexity_pairs: scan.complexity_pairs,
     })
 }
 
@@ -238,6 +242,25 @@ fn render_cognitive_distribution(stats: &RepoStats, output: &mut String) {
         percent(stats.warned_functions, stats.functions),
         stats.warned_functions,
         stats.functions,
+    ));
+    let high_cyclomatic = stats
+        .complexity_pairs
+        .iter()
+        .filter(|(cyclomatic, _)| *cyclomatic > 10)
+        .count();
+    let flat_but_flagged = stats
+        .complexity_pairs
+        .iter()
+        .filter(|(cyclomatic, cognitive)| *cyclomatic > 10 && *cognitive <= 10)
+        .count();
+    let tangled = stats
+        .complexity_pairs
+        .iter()
+        .filter(|(cyclomatic, cognitive)| *cyclomatic > 10 && *cognitive > 15)
+        .count();
+    output.push_str(&format!(
+        "  Cyclomatic >10: {high_cyclomatic} functions; cognitive <=10 (flat dispatch): {flat_but_flagged} ({:.1}%); cognitive >15 (tangled): {tangled}\n",
+        percent(flat_but_flagged, high_cyclomatic),
     ));
 }
 

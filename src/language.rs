@@ -11,6 +11,7 @@ pub enum Language {
     TypeScript,
     Tsx,
     Rust,
+    Go,
 }
 
 impl Language {
@@ -24,6 +25,7 @@ impl Language {
             "ts" | "mts" | "cts" => Some(Self::TypeScript),
             "tsx" => Some(Self::Tsx),
             "rs" => Some(Self::Rust),
+            "go" => Some(Self::Go),
             _ => None,
         }
     }
@@ -37,6 +39,7 @@ impl Language {
             Self::TypeScript => "typescript",
             Self::Tsx => "tsx",
             Self::Rust => "rust",
+            Self::Go => "go",
         }
     }
 
@@ -52,6 +55,10 @@ impl Language {
         self == Self::Rust
     }
 
+    pub fn is_go(self) -> bool {
+        self == Self::Go
+    }
+
     pub fn ts_language(self) -> TsLanguage {
         match self {
             Self::C => tree_sitter_c::LANGUAGE.into(),
@@ -61,6 +68,7 @@ impl Language {
             Self::TypeScript => tree_sitter_typescript::LANGUAGE_TYPESCRIPT.into(),
             Self::Tsx => tree_sitter_typescript::LANGUAGE_TSX.into(),
             Self::Rust => tree_sitter_rust::LANGUAGE.into(),
+            Self::Go => tree_sitter_go::LANGUAGE.into(),
         }
     }
 

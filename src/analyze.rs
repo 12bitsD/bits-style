@@ -111,7 +111,7 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
     {
         result.executed.insert("BCS013".to_owned());
     }
-    if language == Language::Python {
+    if matches!(language, Language::Python | Language::Go) {
         result
             .not_applicable
             .extend(["BCS007", "BCS008"].map(str::to_owned));
@@ -120,7 +120,14 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             .executed
             .extend(["BCS007", "BCS008"].map(str::to_owned));
     }
-    result.executed.insert("BCS009".to_owned());
+    if language == Language::Go {
+        result.executed.remove("BCS009");
+        result
+            .not_applicable
+            .extend(["BCS002", "BCS009"].map(str::to_owned));
+    } else {
+        result.executed.insert("BCS009".to_owned());
+    }
 
     visit(root, &mut |node| {
         if is_function(node.kind()) {
@@ -191,10 +198,16 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
             }
             "call_expression" | "call" => {
                 analyze_hidden_input(language, relative, source, node, &mut result.violations);
-                if language.is_rust() {
-                    analyze_rust_result(relative, source, node, &mut result.violations);
-                }
                 analyze_assert_call_side_effects(relative, source, node, &mut result.violations);
+            }
+            "field_declaration" if language == Language::Go => {
+                analyze_go_context_field(
+                    relative,
+                    source,
+                    node,
+                    &result.imports,
+                    &mut result.violations,
+                );
             }
             "assert_statement" => {
                 if has_assert_side_effect(node) {
@@ -302,15 +315,17 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         analyze_inline(root, relative, source, &mut result.violations);
     }
     result.jsx.sort_unstable_by_key(|range| range.start);
-    analyze_spacing(
-        language,
-        relative,
-        source,
-        &result.strings,
-        &result.comments,
-        &result.jsx,
-        &mut result.violations,
-    );
+    if language != Language::Go {
+        analyze_spacing(
+            language,
+            relative,
+            source,
+            &result.strings,
+            &result.comments,
+            &result.jsx,
+            &mut result.violations,
+        );
+    }
     for violation in result
         .violations
         .iter_mut()
@@ -472,58 +487,68 @@ fn analyze_function(
 
     if let Some(parameters) = find_parameters(node) {
         let params = parameter_nodes(language, parameters);
-        if params.len() > 4 {
+        let param_count = if language == Language::Go {
+            go_parameter_count(&params)
+        } else {
+            params.len()
+        };
+        if param_count > 4 {
             push_function_contract(
                 violations,
                 relative,
                 parameters,
                 "BCS004",
                 "function has more than four parameters",
-                params.len(),
+                param_count,
                 "<=4",
             );
             if let Some(violation) = violations.last_mut() {
                 violation.severity = "warning".to_owned();
             }
         }
-        let parameter_names = params
-            .iter()
-            .filter_map(|parameter| parameter_name(source, *parameter))
-            .collect::<BTreeSet<_>>();
-        for parameter in params {
-            let text = node_text(source, parameter);
-            if is_positional_required_boolean(language, source, parameter, text) && !react_component
-            {
-                push_function_contract(
-                    violations,
-                    relative,
-                    parameter,
-                    "BCS004",
-                    "boolean parameters must not switch between two behaviors",
-                    text,
-                    "non_boolean_parameter",
-                );
+        if language == Language::Go {
+            analyze_go_context_param_order(relative, source, &params, violations);
+        } else {
+            let parameter_names = params
+                .iter()
+                .filter_map(|parameter| parameter_name(source, *parameter))
+                .collect::<BTreeSet<_>>();
+            for parameter in params {
+                let text = node_text(source, parameter);
+                if is_positional_required_boolean(language, source, parameter, text)
+                    && !react_component
+                {
+                    push_function_contract(
+                        violations,
+                        relative,
+                        parameter,
+                        "BCS004",
+                        "boolean parameters must not switch between two behaviors",
+                        text,
+                        "non_boolean_parameter",
+                    );
+                }
+                if language.is_c_like() && is_unnamed_c_parameter(parameter) {
+                    push_function_contract(
+                        violations,
+                        relative,
+                        parameter,
+                        "BCS004",
+                        "function declarations must include parameter names",
+                        text,
+                        "named_parameter",
+                    );
+                }
             }
-            if language.is_c_like() && is_unnamed_c_parameter(parameter) {
-                push_function_contract(
-                    violations,
-                    relative,
-                    parameter,
-                    "BCS004",
-                    "function declarations must include parameter names",
-                    text,
-                    "named_parameter",
-                );
-            }
+            analyze_parameter_mutability(
+                language,
+                relative,
+                source,
+                node,
+                &parameter_names,
+                violations,
+            );
         }
-        analyze_parameter_mutability(
-            language,
-            relative,
-            source,
-            node,
-            &parameter_names,
-            violations,
-        );
     }
 
     if let Some(name_node) = function_name(node) {
@@ -535,6 +560,8 @@ fn analyze_function(
         {
             let expected = if language.is_script() {
                 "lowerCamelCase"
+            } else if language == Language::Go {
+                "MixedCase"
             } else {
                 "lower_snake_case"
             };
@@ -717,9 +744,13 @@ fn is_else_if(node: Node) -> bool {
     matches!(
         node.kind(),
         "if_statement" | "if_expression" | "if_let_expression"
-    ) && node
-        .parent()
-        .is_some_and(|parent| parent.kind() == "else_clause")
+    ) && node.parent().is_some_and(|parent| {
+        parent.kind() == "else_clause"
+            || (parent.kind() == "if_statement"
+                && parent
+                    .child_by_field_name("alternative")
+                    .is_some_and(|alt| alt.id() == node.id()))
+    })
 }
 
 fn metrics_walk(
@@ -777,6 +808,9 @@ fn node_complexity_scores(
             | "switch_statement"
             | "match_statement"
             | "match_expression"
+            | "select_statement"
+            | "expression_switch_statement"
+            | "type_switch_statement"
     );
     if structural {
         let cognitive = if else_if { 1 } else { 1 + depth };
@@ -1640,22 +1674,51 @@ fn analyze_assert_call_side_effects(
     }
 }
 
+fn is_test_cfg(source: &str, node: Node) -> bool {
+    let text = node_text(source, node);
+    text.contains("cfg(") && contains_word(text, "test")
+}
+
+fn has_leading_inner_test_cfg(source: &str, container: Node) -> bool {
+    for index in 0..container.named_child_count() {
+        let Some(child) = container.named_child(index as u32) else {
+            continue;
+        };
+        if child.kind() != "inner_attribute_item" {
+            break;
+        }
+        if is_test_cfg(source, child) {
+            return true;
+        }
+    }
+    false
+}
+
 fn in_cfg_test_module(source: &str, node: Node) -> bool {
-    let mut current = node.parent();
-    while let Some(parent) = current {
-        if parent.kind() == "mod_item" {
-            let mut sibling = parent.prev_named_sibling();
+    let mut current = Some(node);
+    while let Some(item) = current {
+        if matches!(item.kind(), "mod_item" | "source_file") {
+            let mut sibling = item.prev_named_sibling();
             while let Some(attr) = sibling {
                 if attr.kind() != "attribute_item" {
                     break;
                 }
-                if node_text(source, attr).contains("cfg(test)") {
+                if is_test_cfg(source, attr) {
                     return true;
                 }
                 sibling = attr.prev_named_sibling();
             }
         }
-        current = parent.parent();
+        if item.kind() == "source_file" && has_leading_inner_test_cfg(source, item) {
+            return true;
+        }
+        if item.kind() == "mod_item"
+            && let Some(body) = item.child_by_field_name("body")
+            && has_leading_inner_test_cfg(source, body)
+        {
+            return true;
+        }
+        current = item.parent();
     }
     false
 }
@@ -1751,37 +1814,129 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
     }
 }
 
-fn analyze_rust_result(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
-    let text = node_text(source, node);
-    if text.contains(".unwrap()") || text.contains(".expect(") {
-        push(
-            violations,
-            relative,
-            node,
-            "BCS013",
-            "Result must be handled explicitly instead of unwrap/expect",
-            text,
-            "use ? or explicit error handling",
-        );
-        if let Some(violation) = violations.last_mut() {
-            violation.severity = "warning".to_owned();
-            violation.confidence = "low".to_owned();
+fn is_rust_allowed_wildcard(relative: &str, source: &str, node: Node, text: &str) -> bool {
+    let trimmed = text.trim_start();
+    let scoped_reexport = trimmed.starts_with("pub(") && trimmed.contains(") use ");
+    if trimmed.starts_with("pub use ")
+        || scoped_reexport
+        || trimmed.contains("::prelude::*")
+        || trimmed.contains("::lib::*")
+        || in_cfg_test_module(source, node)
+        || crate::test_index::is_test_file_path(relative)
+    {
+        return true;
+    }
+    let target = trimmed.trim_end_matches(';').trim_end();
+    if matches!(target, "use super::*" | "use self::*") {
+        let mut current = node.parent();
+        while let Some(parent) = current {
+            if parent.kind() == "mod_item" && parent.child_by_field_name("body").is_some() {
+                return true;
+            }
+            current = parent.parent();
         }
     }
-    if text.contains("panic!") || text.contains("unimplemented!") || text.contains("todo!") {
-        push(
-            violations,
-            relative,
-            node,
-            "BCS013",
-            "panic-based control flow requires an explicit invariant",
-            text,
-            "documented invariant or error result",
-        );
-        if let Some(violation) = violations.last_mut() {
-            violation.severity = "warning".to_owned();
-            violation.confidence = "low".to_owned();
+    let Some((prefix, _)) = target.rsplit_once("::") else {
+        return false;
+    };
+    let owner = prefix.rsplit("::").next().unwrap_or("").trim();
+    owner.chars().next().is_some_and(char::is_uppercase)
+}
+
+fn go_parameter_count(params: &[Node]) -> usize {
+    params
+        .iter()
+        .map(|param| {
+            let names = (0..param.named_child_count())
+                .filter(|&i| {
+                    param
+                        .named_child(i as u32)
+                        .is_some_and(|child| child.kind() == "identifier")
+                })
+                .count();
+            names.max(1)
+        })
+        .sum()
+}
+
+fn is_go_context_type(source: &str, node: Node) -> bool {
+    node.kind() == "qualified_type"
+        && node_text(source, node)
+            .rsplit('.')
+            .next()
+            .is_some_and(|name| name == "Context")
+        && node
+            .child_by_field_name("package")
+            .is_some_and(|pkg| matches!(node_text(source, pkg), "context" | "stdctx"))
+}
+
+fn analyze_go_context_param_order(
+    relative: &str,
+    source: &str,
+    params: &[Node],
+    violations: &mut Vec<Violation>,
+) {
+    let mut seen_non_context = false;
+    for param in params {
+        let Some(ty) = param.child_by_field_name("type") else {
+            continue;
+        };
+        if is_go_context_type(source, ty) {
+            if seen_non_context {
+                let mut violation = Violation::new(
+                    "BCS004",
+                    relative,
+                    param.start_position().row + 1,
+                    param.start_position().column + 1,
+                    "context.Context must be the first parameter",
+                    node_text(source, *param),
+                    "context_first",
+                    false,
+                );
+                violation.mark_taste_warning("level-purity");
+                violations.push(violation);
+            }
+        } else {
+            seen_non_context = true;
         }
+    }
+}
+
+fn analyze_go_context_field(
+    relative: &str,
+    source: &str,
+    node: Node,
+    imports: &[ImportRecord],
+    violations: &mut Vec<Violation>,
+) {
+    let imports_context = imports.iter().any(|import| import.specifier == "context");
+    if !imports_context {
+        return;
+    }
+    let Some(ty) = node.child_by_field_name("type") else {
+        return;
+    };
+    if ty.kind() == "qualified_type"
+        && node_text(source, ty).ends_with(".Context")
+        && ty.child_by_field_name("package").is_some_and(|pkg| {
+            imports.iter().any(|import| {
+                import.specifier == "context"
+                    && import.binding.as_deref() == Some(node_text(source, pkg))
+            })
+        })
+    {
+        let mut violation = Violation::new(
+            "BCS011",
+            relative,
+            node.start_position().row + 1,
+            node.start_position().column + 1,
+            "context.Context must not be stored in structs",
+            node_text(source, node),
+            "pass_context_explicitly",
+            false,
+        );
+        violation.mark_taste_warning("state-gain");
+        violations.push(violation);
     }
 }
 
@@ -1945,9 +2100,8 @@ fn analyze_import(
         let init_reexport = language == Language::Python
             && relative.ends_with("__init__.py")
             && text.trim_start().starts_with("from .");
-        let rust_allowed_wildcard = language == Language::Rust
-            && (text.trim_start().starts_with("pub use ")
-                || (text.contains("super::*") && in_cfg_test_module(source, node)));
+        let rust_allowed_wildcard =
+            language == Language::Rust && is_rust_allowed_wildcard(relative, source, node, text);
         if diagnostics
             && (binding.as_deref() == Some("*") || text.contains("import *"))
             && !init_reexport
@@ -1966,6 +2120,7 @@ fn analyze_import(
         let noqa_reexport = language == Language::Python
             && (text.contains("noqa: F401") || text.contains("noqa:F401"));
         if diagnostics
+            && !matches!(language, Language::Rust | Language::Go)
             && let Some(name) = binding.as_deref()
             && name != "*"
             && !noqa_reexport
@@ -2022,6 +2177,42 @@ fn analyze_import(
                     }
                     record(clause.to_owned(), Some(binding.to_owned()), false);
                 }
+            }
+        }
+        Language::Go => {
+            let mut dot_import = None;
+            visit(node, &mut |child| {
+                if child.kind() != "import_spec" {
+                    return;
+                }
+                let Some(path_node) = child.child_by_field_name("path") else {
+                    return;
+                };
+                let specifier = node_text(source, path_node)
+                    .trim_matches(['"', '`'])
+                    .to_owned();
+                let alias = child
+                    .child_by_field_name("name")
+                    .map(|name| node_text(source, name).trim().to_owned());
+                if alias.as_deref() == Some(".") && !relative.ends_with("_test.go") {
+                    dot_import = Some(child);
+                }
+                let default_name = specifier.rsplit('/').next().unwrap_or("").to_owned();
+                record(specifier, Some(alias.unwrap_or(default_name)), false);
+            });
+            if diagnostics && let Some(dot) = dot_import {
+                let mut violation = Violation::new(
+                    "BCS014",
+                    relative,
+                    dot.start_position().row + 1,
+                    dot.start_position().column + 1,
+                    "dot imports obscure symbol origins",
+                    node_text(source, dot),
+                    "named_import",
+                    false,
+                );
+                violation.mark_taste_warning("level-purity");
+                result.violations.push(violation);
             }
         }
         Language::Python => {
@@ -2478,26 +2669,24 @@ fn analyze_hidden_input(
     let text = node_text(source, node);
     let hidden = match language {
         Language::Python => text.contains("os.environ") || text.contains("os.getenv"),
-        Language::Rust => {
-            text.contains("env::var")
-                || text.contains("SystemTime::now")
-                || text.contains("Instant::now")
-                || text.contains("rand::random")
-                || text.contains("thread_rng")
-        }
+        Language::Rust => text.contains("env::var") || text.contains("env::args"),
+        Language::Go => text.starts_with("os.Getenv") || text.starts_with("os.Environ"),
         _ if language.is_script() => text.contains("process.env"),
         _ => text.starts_with("getenv(") || text.contains("std::getenv"),
     };
     if hidden {
-        push(
-            violations,
-            relative,
-            node,
+        let mut violation = Violation::new(
             "BCS011",
-            "environment values must be passed explicitly",
+            relative,
+            node.start_position().row + 1,
+            node.start_position().column + 1,
+            "environment values should be read at the boundary and passed explicitly",
             text.lines().next().unwrap_or(text),
             "explicit_input",
+            false,
         );
+        violation.mark_taste_warning("state-gain");
+        violations.push(violation);
     }
 }
 
@@ -2717,6 +2906,8 @@ pub(crate) fn is_function(kind: &str) -> bool {
             | "function_item"
             | "closure_expression"
             | "function_signature_item"
+            | "method_declaration"
+            | "func_literal"
     )
 }
 
@@ -2737,6 +2928,9 @@ fn is_nesting_construct(_language: Language, kind: &str) -> bool {
             | "switch_statement"
             | "match_statement"
             | "match_expression"
+            | "select_statement"
+            | "expression_switch_statement"
+            | "type_switch_statement"
     )
 }
 
@@ -2766,7 +2960,7 @@ fn is_statement_list(kind: &str) -> bool {
 }
 
 fn is_statement(kind: &str) -> bool {
-    kind.ends_with("_statement")
+    kind != "empty_statement" && kind.ends_with("_statement")
         || matches!(
             kind,
             "expression_statement"
@@ -3087,9 +3281,26 @@ fn first_token(source: &str, node: Node, token: char) -> Option<tree_sitter::Poi
 fn valid_function_name(language: Language, name: &str) -> bool {
     if language.is_script() {
         valid_lower_camel(name)
+    } else if language == Language::Go {
+        valid_go_mixed_case(name)
     } else {
         valid_lower_snake(name)
     }
+}
+
+fn valid_go_mixed_case(name: &str) -> bool {
+    static REGEX: OnceLock<Regex> = OnceLock::new();
+    if name == "_"
+        || name.starts_with("Test")
+        || name.starts_with("Benchmark")
+        || name.starts_with("Example")
+        || name.starts_with("Fuzz")
+    {
+        return true;
+    }
+    REGEX
+        .get_or_init(|| Regex::new(r"^[A-Za-z][A-Za-z0-9]*$").unwrap())
+        .is_match(name)
 }
 
 fn valid_lower_camel(name: &str) -> bool {

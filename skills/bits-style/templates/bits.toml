@@ -1,4 +1,4 @@
-# Bits’s Coding Style v0.4.2
+# Bits’s Coding Style v0.5.0
 exclude = [
   "**/generated/**",
   "**/vendor/**",

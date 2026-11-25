@@ -8,6 +8,7 @@ pub fn collect_tests(language: Language, source: &str, tree: &Tree) -> Vec<Strin
     visit(tree.root_node(), &mut |node| match language {
         Language::Python => collect_python_test(source, node, &mut tests),
         Language::Rust => collect_rust_test(source, node, &mut tests),
+        Language::Go => collect_go_test(source, node, &mut tests),
         _ if language.is_script() => collect_script_test(source, node, &mut tests),
         _ => {}
     });
@@ -23,6 +24,10 @@ pub fn is_test_file_path(relative: &str) -> bool {
         || name.ends_with("_test.py")
         || name.ends_with("_test.go")
         || name.ends_with("_test.rs")
+        || matches!(
+            name,
+            "tests.rs" | "test.rs" | "mocks.rs" | "mock.rs" | "testing.rs" | "test_utils.rs"
+        )
         || name.contains(".test.")
         || name.contains(".spec.")
 }
@@ -69,6 +74,18 @@ fn enclosing_class_name<'a>(source: &'a str, node: Node) -> Option<&'a str> {
     class
         .child_by_field_name("name")
         .map(|name| analyze::node_text(source, name))
+}
+
+fn collect_go_test(source: &str, node: Node, tests: &mut Vec<String>) {
+    if node.kind() != "function_declaration" {
+        return;
+    }
+    if let Some(name) =
+        analyze::function_name(node).map(|name_node| analyze::node_text(source, name_node))
+        && (name.starts_with("Test") || name.starts_with("Benchmark"))
+    {
+        tests.push(name.to_owned());
+    }
 }
 
 fn collect_rust_test(source: &str, node: Node, tests: &mut Vec<String>) {

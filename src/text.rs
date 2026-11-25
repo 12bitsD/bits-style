@@ -26,12 +26,14 @@ pub fn scan(
         let mixed = leading.contains(' ') && leading.contains('\t');
         let wrong_profile = match language {
             Language::C | Language::Cpp => leading.contains(' '),
+            Language::Go => false,
             _ => leading.contains('\t'),
         };
         if (mixed || wrong_profile) && !inside_any(&strings, offset) {
             let expected = match language {
                 Language::C | Language::Cpp => "tabs,width=8",
                 Language::Python => "spaces,width=4",
+                Language::Go => "gofmt",
                 _ => "spaces,width=2",
             };
             violations.push(Violation::new(
@@ -59,7 +61,10 @@ pub fn scan(
             ));
         }
         let columns = content.chars().count();
-        if columns > 80 && !long_string_exception(&strings, offset, content) {
+        if language != Language::Go
+            && columns > 80
+            && !long_string_exception(&strings, offset, content)
+        {
             violations.push(Violation::new(
                 "BCS002",
                 relative,
@@ -133,7 +138,16 @@ pub fn scan(
                 false,
             ));
         }
-        if looks_like_commented_code(text) {
+        let line_prefix = source
+            [comment.start - text_start_offset(source, comment.start)..comment.start]
+            .trim_start();
+        let go_package_import = language == Language::Go
+            && line_prefix.starts_with("package ")
+            && text.trim_start_matches("//").trim().starts_with("import ");
+        if !go_package_import
+            && !in_prose_comment_block(source, comment, language)
+            && looks_like_commented_code(language, relative, text)
+        {
             let mut violation = Violation::new(
                 "BCS014",
                 relative,
@@ -292,9 +306,97 @@ fn valid_explanation(text: &str) -> bool {
         .is_match(text)
 }
 
-fn looks_like_commented_code(text: &str) -> bool {
-    let body = text
-        .trim()
+fn text_start_offset(source: &str, offset: usize) -> usize {
+    source[..offset]
+        .rfind('\n')
+        .map_or(offset, |index| offset - index - 1)
+}
+
+fn comment_code_regex() -> &'static Regex {
+    static CODE: OnceLock<Regex> = OnceLock::new();
+    CODE.get_or_init(|| {
+        Regex::new(r"^(?:return\s+.+|if\s*\(|for\s*\(|while\s*\(|switch\s*\(|(?:const|let|var)\s+[A-Za-z_]\w*\s*=\s*[^=\s].*|function\s+[A-Za-z_]\w*\s*\(|import\s+.+|export\s+.+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*=\s*[^=\s].*|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\([^)]*\);?)$").unwrap()
+    })
+}
+
+fn comment_body<'a>(raw: &'a str, marker: &str) -> &'a str {
+    raw.trim().strip_prefix(marker).unwrap_or(raw).trim()
+}
+
+fn is_plain_line_comment(line: &str, marker: &str) -> bool {
+    line.starts_with(marker) && !line.starts_with("///") && !line.starts_with("//!")
+}
+
+fn in_prose_comment_block(source: &str, comment: &Range<usize>, language: Language) -> bool {
+    let raw = &source[comment.clone()];
+    let marker = if raw.starts_with("//") {
+        "//"
+    } else if raw.starts_with('#') && language == Language::Python {
+        "#"
+    } else {
+        return false;
+    };
+    let code = comment_code_regex();
+    let mut block_start = comment.start - text_start_offset(source, comment.start);
+    while block_start > 0 {
+        let prev_end = block_start - 1;
+        let prev_start = prev_end - text_start_offset(source, prev_end);
+        if !is_plain_line_comment(source[prev_start..prev_end].trim_start(), marker) {
+            break;
+        }
+        block_start = prev_start;
+    }
+
+    let mut cursor = block_start;
+    let mut count = 0;
+    let mut has_prose = false;
+    while cursor < source.len() {
+        let end = source[cursor..]
+            .find('\n')
+            .map_or(source.len(), |index| cursor + index);
+        let line = source[cursor..end].trim_start();
+        if !is_plain_line_comment(line, marker) {
+            break;
+        }
+        let body = comment_body(line, marker);
+        count += 1;
+        if body.is_empty()
+            || ((!code.is_match(body) || is_comment_prose(body)) && !body.starts_with("bits:"))
+        {
+            has_prose = true;
+        }
+        cursor = end.saturating_add(1);
+        if end == source.len() {
+            break;
+        }
+    }
+    count > 1 && has_prose
+}
+
+fn is_comment_prose(line: &str) -> bool {
+    if is_return_prose(line) || line.contains(" => ") || line.contains(" or ") {
+        return true;
+    }
+    if line.ends_with('.') && !line.ends_with("...") {
+        return true;
+    }
+    if let Some(rest) = line.strip_prefix("export ") {
+        return rest.starts_with("data ") || rest.starts_with("the ");
+    }
+    false
+}
+
+fn looks_like_commented_code(language: Language, relative: &str, text: &str) -> bool {
+    let trimmed = text.trim();
+    if language == Language::Rust && (trimmed.starts_with("///") || trimmed.starts_with("//!")) {
+        return false;
+    }
+    if language == Language::Go
+        && (relative.ends_with("/doc.go") || relative == "doc.go" || trimmed.starts_with("//\t"))
+    {
+        return false;
+    }
+    let body = trimmed
         .trim_start_matches("//")
         .trim_start_matches('#')
         .trim_start_matches("/*")
@@ -306,14 +408,45 @@ fn looks_like_commented_code(text: &str) -> bool {
     {
         return false;
     }
-    static CODE: OnceLock<Regex> = OnceLock::new();
-    let code = CODE.get_or_init(|| {
-        Regex::new(r"^(?:return\s+.+|if\s*\(|for\s*\(|while\s*\(|switch\s*\(|(?:const|let|var)\s+[A-Za-z_]\w*\s*=|function\s+[A-Za-z_]\w*\s*\(|import\s+.+|export\s+.+|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\s*=|[A-Za-z_]\w*(?:\.[A-Za-z_]\w*)*\([^)]*\);?)$").unwrap()
-    });
+    if language == Language::Go && is_go_method_heading(body) {
+        return false;
+    }
+    let code = comment_code_regex();
     body.lines().count() <= 3
-        && body.lines().map(str::trim).any(|line| code.is_match(line))
+        && body
+            .lines()
+            .map(str::trim)
+            .any(|line| code.is_match(line) && !is_comment_prose(line))
         && !body.contains("TODO")
         && body.len() < 240
+}
+
+fn is_go_method_heading(body: &str) -> bool {
+    static HEADING: OnceLock<Regex> = OnceLock::new();
+    HEADING
+        .get_or_init(|| Regex::new(r"^[A-Z]\w*(?:\.[A-Za-z_]\w*)+\(\)$").unwrap())
+        .is_match(body)
+}
+
+fn is_return_prose(line: &str) -> bool {
+    let Some(rest) = line.strip_prefix("return ") else {
+        return false;
+    };
+    if rest.ends_with('.')
+        || [
+            "the ", "a ", "an ", "whether ", "all ", "is ", "from ", "values ", "only ",
+        ]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix))
+    {
+        return true;
+    }
+    !rest.ends_with(';')
+        && [
+            "true ", "false ", "nil ", "null ", "True ", "False ", "None ",
+        ]
+        .iter()
+        .any(|prefix| rest.starts_with(prefix))
 }
 
 #[derive(Debug, Clone)]
@@ -543,12 +676,84 @@ pub fn apply_inline_suppressions(
 #[cfg(test)]
 mod tests {
     use super::looks_like_commented_code;
+    use crate::language::Language;
 
     #[test]
     fn detects_only_statement_shaped_comments() {
-        assert!(looks_like_commented_code("// return value;"));
-        assert!(!looks_like_commented_code(
-            "// 这里包含分号、括号和花括号，用于解释业务约束；不是旧实现。"
+        assert!(looks_like_commented_code(
+            Language::Python,
+            "sample.py",
+            "# return value"
         ));
+        assert!(looks_like_commented_code(
+            Language::Go,
+            "sample.go",
+            "// return value;"
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Python,
+            "sample.py",
+            "# 这里包含分号、括号和花括号，用于解释业务约束；不是旧实现。"
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Go,
+            "command.go",
+            "// return the args, excluding the one at this position."
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Go,
+            "doc.go",
+            "// import \"go.uber.org/zap\""
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Go,
+            "buffer.go",
+            "//\tsugar.Infof(\"hello\")"
+        ));
+        assert!(looks_like_commented_code(
+            Language::JavaScript,
+            "sample.js",
+            "// const count = 1;"
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Go,
+            "ssa.go",
+            "// true => string iterator; false => map iterator."
+        ));
+        assert!(!looks_like_commented_code(
+            Language::Go,
+            "builder.go",
+            "// length = len(x)."
+        ));
+    }
+
+    #[test]
+    fn prose_comment_blocks_and_package_imports_are_not_dead_code() {
+        let design = "// loop:\n//     jump := READY\n//     x(y)\n//     return true\n//\n// where yield is synthetic:\n";
+        let target = design.find("//     return true").unwrap();
+        assert!(super::in_prose_comment_block(
+            design,
+            &(target..target + "//     return true".len()),
+            Language::Go
+        ));
+
+        let dead = "// const a = 1;\n// const b = 2;\n// call(a, b);\n";
+        let target = dead.find("// const b = 2;").unwrap();
+        assert!(!super::in_prose_comment_block(
+            dead,
+            &(target..target + "// const b = 2;".len()),
+            Language::JavaScript
+        ));
+
+        let package_doc = "package buffer // import \"go.uber.org/zap/buffer\"\n";
+        let comment = 15..51;
+        let violations = super::scan(
+            Language::Go,
+            "buffer.go",
+            package_doc,
+            &[],
+            std::slice::from_ref(&comment),
+        );
+        assert!(!violations.iter().any(|v| v.rule_id == "BCS014"));
     }
 }

@@ -1006,6 +1006,159 @@ fn rust_prelude_reexports_and_test_super_wildcards_are_allowed() {
     );
 }
 
+#[test]
+fn rust_inner_cfg_test_and_tests_rs_allow_wildcards() {
+    let inner = "#![cfg(test)]\nuse super::*;\n";
+    assert_no_rule(&scan("rs", inner), "BCS014");
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("tests.rs");
+    fs::write(&path, "use crate::fs::mocks::*;\n").unwrap();
+    let output = bits(&[
+        "style",
+        "report",
+        path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(json(&output)["results"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn rust_instant_now_and_unsafe_block_semicolon_are_clean() {
+    let source = "use std::time::Instant;\n\nfn elapsed(start: Instant) -> u128 {\n    unsafe { core::ptr::read_volatile(&0u8) };\n    start.elapsed().as_millis()\n}\n";
+    assert_no_rule(&scan("rs", source), "BCS006");
+    assert_no_rule(&scan("rs", source), "BCS011");
+}
+
+#[test]
+fn environment_reads_are_boundary_warnings_not_hard_errors() {
+    let results = scan(
+        "py",
+        "import os\n\ndef load():\n    return os.getenv(\"HOME\")\n",
+    );
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS011" && r["severity"] == "warning" && r["category"] == "state-gain"
+    }));
+}
+
+#[test]
+fn go_profile_omits_gofmt_rules_and_language_specific_subtractions() {
+    let long_line = format!(
+        "package main\n\nfunc Run(enabled bool) {{\n\tprintln(\"{}\")\n\tenabled = false\n\t_ = enabled\n}}\n",
+        "x".repeat(90)
+    );
+    let results = scan("go", &long_line);
+    for rule in ["BCS002", "BCS004", "BCS007", "BCS009", "BCS011"] {
+        assert_no_rule(&results, rule);
+    }
+}
+
+#[test]
+fn go_context_rules_require_real_context_import_and_usage() {
+    let bad = "package svc\n\nimport \"context\"\n\ntype worker struct {\n\tctx context.Context\n}\n\nfunc handle(id int, ctx context.Context) {}\n";
+    let results = scan("go", bad);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS004"
+            && r["severity"] == "warning"
+            && r["message"] == "context.Context must be the first parameter"
+    }));
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS011"
+            && r["severity"] == "warning"
+            && r["message"] == "context.Context must not be stored in structs"
+    }));
+
+    let clean = "package svc\n\nfunc handle(ctx context.Context, id int) {}\n\ntype worker struct {\n\tctx other.Context\n}\n";
+    assert_no_rule(&scan("go", clean), "BCS004");
+    assert_no_rule(&scan("go", clean), "BCS011");
+}
+
+#[test]
+fn go_dot_import_warns_outside_tests() {
+    let bad = "package main\n\nimport . \"fmt\"\n\nfunc main() { Println(\"hi\") }\n";
+    assert!(
+        scan("go", bad)
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS014" && r["severity"] == "warning" })
+    );
+
+    let directory = tempfile::tempdir().unwrap();
+    let path = directory.path().join("main_test.go");
+    fs::write(&path, "package main\n\nimport . \"testing\"\n").unwrap();
+    let output = bits(&[
+        "style",
+        "report",
+        path.to_str().unwrap(),
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0));
+    assert!(json(&output)["results"].as_array().unwrap().is_empty());
+}
+
+#[test]
+fn go_taint_sources_and_test_index_work() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("main.go"),
+        "package main\n\nimport \"fmt\"\n\n// bits:spec(pure)\nfunc render() {\n\tfmt.Println(\"hi\")\n}\n",
+    )
+    .unwrap();
+    let report = scan_dir(root);
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS017" })
+    );
+
+    fs::remove_file(root.join("main.go")).unwrap();
+    let body = "\tx := 0\n".to_owned() + &"\tx += 1\n".repeat(55);
+    fs::write(
+        root.join("step.go"),
+        format!(
+            "package main\n\n// bits:prove(BCS003, test=TestStep): shared lock; split unlocks\nfunc step() int {{\n{body}\treturn x\n}}\n"
+        ),
+    )
+    .unwrap();
+    fs::write(
+        root.join("step_test.go"),
+        "package main\n\nimport \"testing\"\n\nfunc TestStep(t *testing.T) {}\n",
+    )
+    .unwrap();
+    let report = scan_dir(root);
+    assert!(
+        !report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| r["rule_id"] == "BCS015"),
+        "unexpected proof errors: {report:#?}"
+    );
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS003" && r["obligation"] == "critic_review" })
+    );
+}
+
+#[test]
+fn go_flat_switch_stays_low_cognitive_complexity() {
+    let arms = (0..15)
+        .map(|i| format!("\tcase {i}:\n\t\treturn {i}\n"))
+        .collect::<String>();
+    let source = format!(
+        "package main\n\nfunc route(code int) int {{\n\tswitch code {{\n{arms}\tdefault:\n\t\treturn 0\n\t}}\n}}\n"
+    );
+    assert_no_rule(&scan("go", &source), "BCS003");
+}
+
 fn scan_dir(root: &Path) -> Value {
     let mut args = vec![
         "style",

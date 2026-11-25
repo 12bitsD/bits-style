@@ -68,7 +68,7 @@
 
 语言 Profile 定义缩进、括号、命名、续行、资源清理和工具配置。编译器、ABI、FFI、框架重写方法及回调强制要求的签名和命名优先于本规范，但必须使用第 5 节的行级豁免。
 
-当前 Profile：C/C++、Python、JavaScript/TypeScript/TSX、Rust、Go。Rust 为 partial 支持，Go 目前只有规范 Profile，扫描器支持状态以 `docs/language-support.md` 为准。
+当前 Profile：C/C++、Python、JavaScript/TypeScript/TSX、Rust、Go。Rust 与 Go 均为 partial 支持，扫描器支持状态以 `docs/language-support.md` 为准。
 
 基础语法和语言官方工具已经覆盖的问题不在 Profile 中重复检查。Bits 的底层目标是让代码和逻辑简单到不容易出错，优先约束错误路径、状态、资源、并发和抽象成本。
 
@@ -80,6 +80,7 @@
 - C/C++：Tab 缩进，`TabWidth = 8`、`IndentWidth = 8`。
 - Python、Rust：4 个 Space 缩进。
 - JavaScript/TypeScript/TSX：2 个 Space 缩进。
+- Go：缩进与行宽完全由 `gofmt` 决定，Bits 不重复检查。
 - 禁止源码内 editor modeline。
 
 ### BCS002　行宽与续行 `[AUTO-PROFILE]`
@@ -192,7 +193,7 @@
 
 - 模块运行时依赖必须无环；`TYPE_CHECKING` / `import type` 仅类型边不进入运行时环图，自环边忽略。Python 绝对导入按 `__init__.py` 包根解析，不将标准库同名模块误判为包内模块。
 - 禁止未使用的导入、依赖、变量、函数和不可达代码；Python 类型注解与类型别名中的字符串前向引用（如 `x: "Console"`、`Union["URL", str]`）及 `# noqa: F401` 显式导出计为真实引用，普通字符串（如 `VALUE = "os"`）不计。
-- 禁止通配符导入（Python `__init__.py` 相对公开导出、Rust `pub use ...::*` 公开再导出、Rust `#[cfg(test)]` 模块内 `use super::*` 除外），禁止保留注释掉的旧实现。
+- 禁止通配符导入（Python `__init__.py` 相对公开导出；Rust `pub`/`pub(...)` 再导出、prelude、枚举变体、`#[cfg(...test...)]`、测试/模拟文件及同文件内联子模块的 `use super::*` 除外）；Go 非测试文件的 dot import 报 warning。禁止保留注释掉的旧实现（多行说明块、文档示例与映射说明句不算旧实现）。Rust/Go 的未使用导入交由 `rustc` / Go 编译器判定。
 - 接口或回调的未使用参数必须使用 Profile 规定的 `_`、`_name` 或 `[[maybe_unused]]` 等显式标记。
 
 ### BCS015　注释与源码元数据 `[AUTO-CORE]`
@@ -264,7 +265,7 @@ bits:prove(BCS016): check 内部依赖分支求值顺序；提升会改变初始
 ```
 
 - 必须用 `;` 或 `；` 分隔为**两段**：为什么这是最简形式；删掉/改简单后的具体风险。
-- 高风险边界举证必须附 `test=<fn_or_Class_method>`。扫描器通过 AST 索引真实测试定义（Python `def test_*` / `Test*.test_*`、TS `test()/it()`、Rust `#[test] fn`，含 diff 下未变更的测试文件）；**不存在或有歧义直接报 `BCS015` 硬错误**。
+- 高风险边界举证必须附 `test=<fn_or_Class_method>`。扫描器通过 AST 索引真实测试定义（Python `def test_*` / `Test*.test_*`、TS `test()/it()`、Rust `#[test] fn`、Go `func Test*` / `Benchmark*`，含 diff 下未变更的测试文件）；**不存在或有歧义直接报 `BCS015` 硬错误**。
 - **不能豁免任何硬错误**；作用于 warning 时，将其标记为 `obligation = critic_review`，交由**独立 Critic Agent 或人**核验，写代码的 Agent 不能自审通过。
 - **配额**：`--diff` 模式下每次变更最多新增 **1** 条 `bits:prove`，超出直接报 `BCS015` 硬错误。
 - **过期即删**：未命中任何活跃 warning 的 `bits:prove` 直接报 `BCS015` 硬错误。

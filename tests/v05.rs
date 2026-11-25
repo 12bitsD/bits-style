@@ -160,16 +160,12 @@ fn multiline_imports_do_not_create_empty_bindings() {
 }
 
 #[test]
-fn rust_unwrap_is_a_warning() {
+fn rust_unwrap_and_panic_are_delegated_to_clippy() {
     let results = scan(
         "rs",
-        "fn read(value: Result<i32, Error>) -> i32 {\n    value.unwrap()\n}\n",
+        "fn read(value: Result<i32, Error>) -> i32 {\n    value.expect(\"valid\")\n}\n\nfn fail() -> ! {\n    panic!(\"boom\")\n}\n",
     );
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
-    );
+    assert!(!results.iter().any(|result| result["rule_id"] == "BCS013"));
 }
 
 #[test]

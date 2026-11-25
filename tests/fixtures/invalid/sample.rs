@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::*;
 
 static mut COUNTER: i32 = 0;
 

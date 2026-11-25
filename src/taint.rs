@@ -38,6 +38,15 @@ const DEFAULT_IO_CALLS: &[&str] = &[
     "*.write_text",
     "*.read_bytes",
     "*.write_bytes",
+    "fmt.Print*",
+    "log.Print*",
+    "log.Fatal*",
+    "log.Panic*",
+    "http.Get",
+    "http.Head",
+    "http.Post*",
+    "http.ListenAndServe*",
+    "http.Serve*",
 ];
 
 const DEFAULT_IO_MODULES: &[&str] = &[
@@ -61,6 +70,9 @@ const DEFAULT_IO_MODULES: &[&str] = &[
     "net",
     "http",
     "https",
+    "io/ioutil",
+    "os/exec",
+    "syscall",
 ];
 
 pub struct IoPolicy {

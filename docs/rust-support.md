@@ -7,9 +7,14 @@ Rust 通过 Tree-sitter 接入，当前为 partial 支持，不代表完整 Rust
 - `function_item`、`closure_expression`、`function_signature_item` 的函数规模、参数和命名。
 - `if_expression`、`match_expression`、循环和 match arm 的结构检查。
 - `let_declaration`、`static_item`、`const_item` 的命名和可变全局检查。
-- `use_declaration` 的绑定、通配符导入、未使用导入和 crate/self/super 相对依赖。
-- `pub use` re-export 和常见 trait 的保守识别，避免把 `Write` 等 trait 误报为未使用。
-- `unwrap`、`expect`、`panic!`、`todo!`、`unimplemented!` 的 warning；`?` 和显式错误处理不被误报。
+- `use_declaration` 的绑定、通配符导入和 crate/self/super 相对依赖；通配符导入放行 `pub`/`pub(...)` 再导出、`::prelude::*`、枚举变体（大写所有者）、`#[cfg(...test...)]` / `#![cfg(test)]`、`tests.rs`/`mocks.rs` 等测试辅助文件及同文件内联子模块的 `use super::*`。
+- 隐式环境输入仅限 `env::var` / `env::args`（作为边界 warning），不再误伤 `Instant::now()`。
+- `unsafe { expr };` 的尾分号不算同行多语句；`///` / `//!` 文档注释不算注释掉的旧代码。
+
+## 委托给官方工具链（L0）
+
+- 未使用导入交由 `rustc`（`unused_imports`），避免 trait 方法解析误报。
+- `unwrap`、`expect`、`panic!`、`todo!`、`unimplemented!` 交由 Clippy（`restriction` 组），Bits 不做文本/子字符串级告警。
 
 ## 边界
 

@@ -67,7 +67,12 @@ fn bcs003_is_a_warning_and_carries_explanation() {
 fn unsupported_languages_are_explicit_and_do_not_pass() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("lib.rs"), "fn main() {}\n").unwrap();
-    fs::write(directory.path().join("main.go"), "package main\n").unwrap();
+    fs::write(
+        directory.path().join("main.go"),
+        "package main\n\nfunc main() {}\n",
+    )
+    .unwrap();
+    fs::write(directory.path().join("Main.java"), "class Main {}\n").unwrap();
     let report = bits(&[
         "style",
         "report",
@@ -79,7 +84,8 @@ fn unsupported_languages_are_explicit_and_do_not_pass() {
     let report = json(&report);
     assert_eq!(report["status"], "unsupported");
     assert_eq!(report["summary"]["unsupported_files"], 1);
-    assert_eq!(report["unsupported"], serde_json::json!(["main.go"]));
+    assert_eq!(report["summary"]["files_scanned"], 2);
+    assert_eq!(report["unsupported"], serde_json::json!(["Main.java"]));
 
     let check = bits(&[
         "style",

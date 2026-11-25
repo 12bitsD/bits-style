@@ -333,7 +333,7 @@ fn scan_report(
     build_report(
         files,
         dependency_context,
-        scans,
+        &scans,
         include_passed,
         unsupported,
         policy,
@@ -345,14 +345,14 @@ fn scan_report(
 fn build_report(
     files: &[DiscoveredFile],
     dependency_context: &[DiscoveredFile],
-    scans: Vec<FileScan>,
+    scans: &[FileScan],
     include_passed: bool,
     unsupported: &[String],
     policy: &IoPolicy,
     diff_base: Option<&(PathBuf, String)>,
 ) -> Report {
     let diff_mode = diff_base.is_some();
-    let dependency_scans = scan_dependency_context(&scans, dependency_context, policy);
+    let dependency_scans = scan_dependency_context(scans, dependency_context, policy);
     let mut report = Report::new();
     report.summary.files_discovered = files.len();
     report.summary.files_scanned = files.len();
@@ -361,7 +361,7 @@ fn build_report(
     report.unsupported = unsupported.to_vec();
     let mut passed_candidates = BTreeMap::new();
 
-    for scan in &scans {
+    for scan in scans {
         report.results.extend(scan.violations.clone());
         report.scan_errors.extend(scan.errors.clone());
         report
@@ -383,13 +383,13 @@ fn build_report(
             .executed
             .extend(["BCS001", "BCS002", "BCS015", "BCS017"].map(str::to_owned));
     }
-    check_dependency_cycles(&scans, &dependency_scans, diff_mode, &mut report.results);
-    check_purity_contracts(&scans, &dependency_scans, &mut report.results);
-    filter_diff_violations(&scans, diff_mode, &mut report.results);
-    apply_improving_ratchet(files, &scans, diff_base, &mut report.results);
-    enforce_annotation_policy(&scans, &dependency_scans, diff_mode, &mut report.results);
+    check_dependency_cycles(scans, &dependency_scans, diff_mode, &mut report.results);
+    check_purity_contracts(scans, &dependency_scans, &mut report.results);
+    filter_diff_violations(scans, diff_mode, &mut report.results);
+    apply_improving_ratchet(files, scans, diff_base, &mut report.results);
+    enforce_annotation_policy(scans, &dependency_scans, diff_mode, &mut report.results);
     report.finish();
-    report.summary.functions_with_warnings = count_warned_functions(&scans, &report.results);
+    report.summary.functions_with_warnings = count_warned_functions(scans, &report.results);
 
     if include_passed {
         for (file, rules) in passed_candidates {
@@ -628,6 +628,7 @@ fn count_warned_functions(scans: &[FileScan], results: &[Violation]) -> usize {
 pub struct BenchScan {
     pub report: Report,
     pub cognitive_scores: Vec<usize>,
+    pub complexity_pairs: Vec<(usize, usize)>,
     pub functions_with_warnings: usize,
 }
 
@@ -640,10 +641,18 @@ pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<BenchScan,
         .iter()
         .flat_map(|scan| scan.shapes.iter().map(|shape| shape.cognitive))
         .collect();
+    let complexity_pairs = scans
+        .iter()
+        .flat_map(|scan| {
+            scan.shapes
+                .iter()
+                .map(|shape| (shape.complexity, shape.cognitive))
+        })
+        .collect();
     let mut report = build_report(
         &discovery.files,
         &[],
-        scans,
+        &scans,
         false,
         &discovery.unsupported,
         &policy,
@@ -653,10 +662,12 @@ pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<BenchScan,
         .results
         .retain(|violation| !crate::bench::is_format_rule(&violation.rule_id));
     report.finish();
+    report.summary.functions_with_warnings = count_warned_functions(&scans, &report.results);
     let functions_with_warnings = report.summary.functions_with_warnings;
     Ok(BenchScan {
         report,
         cognitive_scores,
+        complexity_pairs,
         functions_with_warnings,
     })
 }

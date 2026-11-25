@@ -64,8 +64,7 @@
 ### GO007　复杂度约束针对逻辑，不针对屏幕
 
 - 函数有效代码行、嵌套和圈复杂度遵循 BCS003，但不得为达标拆散一个连续决策过程。
-- 参数不超过 4 个，禁止布尔参数切换行为。
-- 参数重赋值、变量遮蔽和可变全局状态会放大理解成本，禁止新增。
+- 参数超过 4 个由 Bits L1 报 warning；Go 的 functional options（如 `WithRetries(n int)`、`WithTLS(enabled bool)`）是标准配置范式，布尔参数陷阱与参数重赋值交由 L2 按场景审查，不在 L1 一刀切。
 - 不为了缩短代码使用嵌套表达式、双重否定或高密度 one-liner。
 
 ## 4. 可修改性优先
@@ -96,7 +95,7 @@
 - 常量不强制 `UPPER_SNAKE_CASE`，遵循 Go 的导出规则和包内惯例。
 - 命名表达领域含义、单位和肯定式布尔语义；禁止匈牙利命名。
 - package 名保持简短、小写且与目录用途一致，不使用 `util/common/base` 收容无关概念。
-- dot import 默认禁止；blank import 只允许明确的驱动或注册场景，并在引入处说明副作用。
+- dot import 默认禁止（非 `_test.go` 文件由 Bits L1 `BCS014` 报 warning）；blank import 只允许明确的驱动或注册场景，并在引入处说明副作用；`package foo // import "path"` 官方包路径注释不算旧代码。
 
 ## 6. 简短排在最后
 
