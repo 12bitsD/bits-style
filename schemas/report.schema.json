@@ -101,7 +101,9 @@
         "warnings": { "type": "integer", "minimum": 0 },
         "unsupported_files": { "type": "integer", "minimum": 0 },
         "proves": { "type": "integer", "minimum": 0 },
-        "improving": { "type": "integer", "minimum": 0 }
+        "improving": { "type": "integer", "minimum": 0 },
+        "functions_checked": { "type": "integer", "minimum": 0 },
+        "functions_with_warnings": { "type": "integer", "minimum": 0 }
       }
     },
     "fixes": { "type": "array" },

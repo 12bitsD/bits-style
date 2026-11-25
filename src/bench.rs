@@ -9,7 +9,9 @@ use serde::Deserialize;
 use crate::model::Report;
 use crate::scanner;
 
-const FORMAT_RULES: [&str; 5] = ["BCS001", "BCS002", "BCS007", "BCS008", "BCS009"];
+pub(crate) fn is_format_rule(rule: &str) -> bool {
+    matches!(rule, "BCS001" | "BCS002" | "BCS007" | "BCS008" | "BCS009")
+}
 
 #[derive(Debug, Args)]
 pub struct BenchArgs {
@@ -120,21 +122,37 @@ fn eval_case(
     Ok(ok)
 }
 
+struct RepoStats {
+    violations: usize,
+    warnings: usize,
+    functions: usize,
+    warned_functions: usize,
+    cognitive: Vec<usize>,
+}
+
 fn eval_negative(args: &BenchArgs, output: &mut String) -> Result<(usize, usize), String> {
     let source = std::fs::read_to_string(&args.manifest)
         .map_err(|error| format!("{}: {error}", args.manifest.display()))?;
     let manifest: Manifest =
         toml::from_str(&source).map_err(|error| format!("{}: {error}", args.manifest.display()))?;
     output.push_str("\nNegative corpus (L1 rules only; format/profile rules excluded):\n");
-    let mut violations = 0;
-    let mut warnings = 0;
+    let mut total = RepoStats {
+        violations: 0,
+        warnings: 0,
+        functions: 0,
+        warned_functions: 0,
+        cognitive: Vec::new(),
+    };
     for repo in &manifest.negative {
-        let (repo_violations, repo_warnings) =
-            eval_repo(repo, &args.cache_dir, args.offline, output)?;
-        violations += repo_violations;
-        warnings += repo_warnings;
+        let stats = eval_repo(repo, &args.cache_dir, args.offline, output)?;
+        total.violations += stats.violations;
+        total.warnings += stats.warnings;
+        total.functions += stats.functions;
+        total.warned_functions += stats.warned_functions;
+        total.cognitive.extend(stats.cognitive);
     }
-    Ok((violations, warnings))
+    render_cognitive_distribution(&total, output);
+    Ok((total.violations, total.warnings))
 }
 
 fn eval_repo(
@@ -142,9 +160,10 @@ fn eval_repo(
     cache_dir: &Path,
     offline: bool,
     output: &mut String,
-) -> Result<(usize, usize), String> {
+) -> Result<RepoStats, String> {
     let checkout = prepare_repo(repo, cache_dir, offline)?;
-    let report = scan_l1(&checkout.join(&repo.path), &repo.exclude)?;
+    let scan = scanner::scan_path_for_bench(&checkout.join(&repo.path), &repo.exclude)?;
+    let report = scan.report;
     let mut by_rule: BTreeMap<&str, (usize, usize)> = BTreeMap::new();
     for violation in &report.results {
         let entry = by_rule.entry(violation.rule_id.as_str()).or_default();
@@ -161,11 +180,65 @@ fn eval_repo(
         .join(", ");
     let short_commit = &repo.commit[..8.min(repo.commit.len())];
     let summary = &report.summary;
+    let warn_pct = percent(summary.functions_with_warnings, summary.functions_checked);
     output.push_str(&format!(
-        "  {} ({short_commit}): files={} violations={} warnings={} [{}]\n",
-        repo.name, summary.files_scanned, summary.violations, summary.warnings, details
+        "  {} ({short_commit}): files={} fns={} violations={} warnings={} warned_fns={:.2}% [{}]\n",
+        repo.name,
+        summary.files_scanned,
+        summary.functions_checked,
+        summary.violations,
+        summary.warnings,
+        warn_pct,
+        details
     ));
-    Ok((summary.violations, summary.warnings))
+    Ok(RepoStats {
+        violations: summary.violations,
+        warnings: summary.warnings,
+        functions: summary.functions_checked,
+        warned_functions: summary.functions_with_warnings,
+        cognitive: scan.cognitive_scores,
+    })
+}
+
+fn percent(part: usize, whole: usize) -> f64 {
+    if whole == 0 {
+        0.0
+    } else {
+        (part as f64) * 100.0 / (whole as f64)
+    }
+}
+
+fn percentile(sorted: &[usize], pct: f64) -> usize {
+    if sorted.is_empty() {
+        return 0;
+    }
+    let rank = ((sorted.len() - 1) as f64 * pct).round() as usize;
+    sorted[rank]
+}
+
+fn render_cognitive_distribution(stats: &RepoStats, output: &mut String) {
+    let mut scores = stats.cognitive.clone();
+    scores.sort_unstable();
+    output.push_str(&format!(
+        "\nCognitive complexity (cognitive_v1) across {} functions:\n  P50={} P90={} P95={} P99={} max={}\n",
+        scores.len(),
+        percentile(&scores, 0.50),
+        percentile(&scores, 0.90),
+        percentile(&scores, 0.95),
+        percentile(&scores, 0.99),
+        scores.last().copied().unwrap_or(0),
+    ));
+    let over = |limit: usize| scores.iter().filter(|&&score| score > limit).count();
+    output.push_str(&format!(
+        "  >10: {:.2}%  >15: {:.2}%  >20: {:.2}%  >25: {:.2}%\n  L1 warned functions overall: {:.2}% ({}/{})\n",
+        percent(over(10), scores.len()),
+        percent(over(15), scores.len()),
+        percent(over(20), scores.len()),
+        percent(over(25), scores.len()),
+        percent(stats.warned_functions, stats.functions),
+        stats.warned_functions,
+        stats.functions,
+    ));
 }
 
 fn load_cases(corpus: &Path) -> Result<Vec<(String, PathBuf, CorpusCase)>, String> {
@@ -193,12 +266,7 @@ fn load_cases(corpus: &Path) -> Result<Vec<(String, PathBuf, CorpusCase)>, Strin
 }
 
 fn scan_l1(path: &Path, exclude: &[String]) -> Result<Report, String> {
-    let mut report = scanner::scan_path_for_bench(path, exclude)?;
-    report
-        .results
-        .retain(|violation| !FORMAT_RULES.contains(&violation.rule_id.as_str()));
-    report.finish();
-    Ok(report)
+    scanner::scan_path_for_bench(path, exclude).map(|scan| scan.report)
 }
 
 fn rule_counts(report: &Report) -> BTreeMap<String, usize> {

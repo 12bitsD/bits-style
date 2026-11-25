@@ -194,6 +194,15 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
                 if language.is_rust() {
                     analyze_rust_result(relative, source, node, &mut result.violations);
                 }
+                analyze_assert_call_side_effects(relative, source, node, &mut result.violations);
+            }
+            "assert_statement" => {
+                if has_assert_side_effect(node) {
+                    push_assert_side_effect(relative, node, &mut result.violations);
+                }
+            }
+            "try_statement" => {
+                analyze_try_rethrow(relative, source, node, &mut result.violations);
             }
             "binary_expression" => {
                 analyze_binary_operator(relative, source, node, &mut result.violations);
@@ -322,6 +331,7 @@ pub struct FunctionShape {
     pub end_line: usize,
     pub nesting: usize,
     pub complexity: usize,
+    pub cognitive: usize,
 }
 
 pub fn function_shapes(language: Language, source: &str, tree: &Tree) -> Vec<FunctionShape> {
@@ -338,13 +348,14 @@ pub fn function_shapes(language: Language, source: &str, tree: &Tree) -> Vec<Fun
         if name.is_empty() || name.contains([' ', '(', ')', '=']) {
             return;
         }
-        let (nesting, complexity) = function_metrics(node);
+        let metrics = function_metrics(source, node);
         shapes.push(FunctionShape {
             name: name.to_owned(),
             start_line: node.start_position().row + 1,
             end_line: node.end_position().row + 1,
-            nesting,
-            complexity,
+            nesting: metrics.nesting,
+            complexity: metrics.cyclomatic,
+            cognitive: metrics.cognitive,
         });
     });
     shapes
@@ -398,15 +409,15 @@ fn analyze_function(
         );
     }
 
-    let (nesting, complexity) = function_metrics(node);
-    if nesting > 3 {
+    let metrics = function_metrics(source, node);
+    if metrics.nesting > 3 {
         push_function(
             violations,
             relative,
             node,
             "BCS003",
             "control-flow nesting exceeds three levels",
-            nesting,
+            metrics.nesting,
             "<=3",
         );
         if let Some(violation) = violations.last_mut() {
@@ -414,18 +425,35 @@ fn analyze_function(
         }
     }
 
-    if complexity > 10 {
+    if metrics.cyclomatic > 10 {
         push_function(
             violations,
             relative,
             node,
             "BCS003",
             "cyclomatic complexity exceeds ten",
-            complexity,
+            metrics.cyclomatic,
             "<=10",
         );
         if let Some(violation) = violations.last_mut() {
             violation.mark_high_confidence_violation();
+        }
+    }
+
+    if metrics.cognitive > 15 {
+        push_function(
+            violations,
+            relative,
+            node,
+            "BCS003",
+            "cognitive complexity exceeds fifteen (cognitive_v1 shadow)",
+            metrics.cognitive,
+            "<=15",
+        );
+        if let Some(violation) = violations.last_mut() {
+            violation.severity = "warning".to_owned();
+            violation.confidence = "high".to_owned();
+            violation.category = Some("control-flow".to_owned());
         }
     }
 
@@ -667,56 +695,167 @@ fn analyze_parameter_mutability(
     });
 }
 
-pub(crate) fn function_metrics(function: Node) -> (usize, usize) {
-    fn recurse(
-        node: Node,
-        root: Node,
-        depth: usize,
-        maximum_nesting: &mut usize,
-        complexity: &mut usize,
-    ) {
-        if node.id() != root.id() && is_function(node.kind()) {
-            return;
-        }
-        let next_depth = if is_nesting_construct(Language::C, node.kind()) {
-            depth + 1
-        } else {
-            depth
-        };
-        *maximum_nesting = (*maximum_nesting).max(next_depth);
-        if matches!(
-            node.kind(),
-            "if_statement"
-                | "for_statement"
-                | "for_in_statement"
-                | "for_of_statement"
-                | "while_statement"
-                | "do_statement"
-                | "catch_clause"
-                | "except_clause"
-                | "conditional_expression"
-                | "ternary_expression"
-                | "elif_clause"
-                | "boolean_operator"
-        ) {
-            *complexity += 1;
-        }
-        if node.kind() == "binary_expression"
-            && let Some(operator) = node.child_by_field_name("operator")
-            && matches!(operator.kind(), "&&" | "||" | "and" | "or")
-        {
-            *complexity += 1;
-        }
-        for index in 0..node.named_child_count() {
-            if let Some(child) = node.named_child(index as u32) {
-                recurse(child, root, next_depth, maximum_nesting, complexity);
-            }
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct FunctionMetrics {
+    pub nesting: usize,
+    pub cyclomatic: usize,
+    pub cognitive: usize,
+}
+
+pub(crate) fn function_metrics(source: &str, function: Node) -> FunctionMetrics {
+    let root_name = function_name(function).map(|name| node_text(source, name));
+    let mut metrics = FunctionMetrics {
+        nesting: 0,
+        cyclomatic: 1,
+        cognitive: 0,
+    };
+    metrics_walk(function, function, source, root_name, 0, &mut metrics);
+    metrics
+}
+
+fn is_else_if(node: Node) -> bool {
+    matches!(
+        node.kind(),
+        "if_statement" | "if_expression" | "if_let_expression"
+    ) && node
+        .parent()
+        .is_some_and(|parent| parent.kind() == "else_clause")
+}
+
+fn metrics_walk(
+    node: Node,
+    root: Node,
+    source: &str,
+    root_name: Option<&str>,
+    depth: usize,
+    metrics: &mut FunctionMetrics,
+) {
+    if node.id() != root.id() && is_function(node.kind()) {
+        return;
+    }
+    let else_if = is_else_if(node);
+    let nests = !else_if && is_nesting_construct(Language::C, node.kind());
+    if nests {
+        metrics.nesting = metrics.nesting.max(depth + 1);
+    }
+    let (cyclomatic, cognitive) = node_complexity_scores(node, source, root_name, depth, else_if);
+    metrics.cyclomatic += cyclomatic;
+    metrics.cognitive += cognitive;
+    let next_depth = if nests { depth + 1 } else { depth };
+    for index in 0..node.named_child_count() {
+        if let Some(child) = node.named_child(index as u32) {
+            metrics_walk(child, root, source, root_name, next_depth, metrics);
         }
     }
-    let mut nesting = 0;
-    let mut complexity = 1;
-    recurse(function, function, 0, &mut nesting, &mut complexity);
-    (nesting, complexity)
+}
+
+fn node_complexity_scores(
+    node: Node,
+    source: &str,
+    root_name: Option<&str>,
+    depth: usize,
+    else_if: bool,
+) -> (usize, usize) {
+    let kind = node.kind();
+    let structural = matches!(
+        kind,
+        "if_statement"
+            | "if_expression"
+            | "if_let_expression"
+            | "for_statement"
+            | "for_in_statement"
+            | "for_of_statement"
+            | "for_expression"
+            | "while_statement"
+            | "while_expression"
+            | "do_statement"
+            | "loop_expression"
+            | "catch_clause"
+            | "except_clause"
+            | "conditional_expression"
+            | "ternary_expression"
+            | "switch_statement"
+            | "match_statement"
+            | "match_expression"
+    );
+    if structural {
+        let cognitive = if else_if { 1 } else { 1 + depth };
+        return (1, cognitive);
+    }
+    if kind == "elif_clause" || kind == "else_clause" {
+        let cyclomatic = usize::from(kind == "elif_clause");
+        return (cyclomatic, 1);
+    }
+    if kind == "match_arm" && node.child_by_field_name("guard").is_some() {
+        return (0, 1);
+    }
+    if kind == "boolean_operator" {
+        return (1, logical_sequence_increment(node));
+    }
+    if kind == "binary_expression"
+        && let Some(operator) = node.child_by_field_name("operator")
+        && matches!(operator.kind(), "&&" | "||" | "and" | "or")
+    {
+        return (1, logical_sequence_increment(node));
+    }
+    if kind == "goto_statement" {
+        return (0, 1);
+    }
+    if matches!(kind, "call" | "call_expression")
+        && let (Some(callee), Some(name)) = (node.child_by_field_name("function"), root_name)
+        && callee.kind() == "identifier"
+        && node_text(source, callee) == name
+    {
+        return (0, 1);
+    }
+    (0, 0)
+}
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum LogicalOp {
+    And,
+    Or,
+}
+
+fn logical_operator_kind(node: Node) -> Option<LogicalOp> {
+    match node.kind() {
+        "boolean_operator" => {
+            let has_or = (0..node.child_count())
+                .any(|i| node.child(i).is_some_and(|child| child.kind() == "or"));
+            Some(if has_or {
+                LogicalOp::Or
+            } else {
+                LogicalOp::And
+            })
+        }
+        "binary_expression" => {
+            let operator = node.child_by_field_name("operator")?.kind();
+            match operator {
+                "&&" | "and" => Some(LogicalOp::And),
+                "||" | "or" => Some(LogicalOp::Or),
+                _ => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+fn logical_sequence_increment(node: Node) -> usize {
+    let Some(current) = logical_operator_kind(node) else {
+        return 0;
+    };
+    let mut parent = node.parent();
+    while let Some(candidate) = parent {
+        if candidate.kind() == "parenthesized_expression" {
+            parent = candidate.parent();
+            continue;
+        }
+        return match logical_operator_kind(candidate) {
+            Some(parent_op) if parent_op == current => 0,
+            _ => 1,
+        };
+    }
+    1
 }
 
 fn collect_locals(language: Language, source: &str, function: Node) -> BTreeSet<String> {
@@ -895,35 +1034,115 @@ fn analyze_if(
         );
     }
 
-    analyze_branch_head_duplication(relative, source, node, violations);
+    analyze_collapsible_if(relative, node, violations);
+    if let Some((branches, exhaustive)) = collect_if_branches(node) {
+        analyze_identical_adjacent_arms(relative, source, &branches, violations);
+        if exhaustive {
+            analyze_branch_head_duplication(relative, source, node, &branches, violations);
+        }
+    }
 }
 
-fn analyze_branch_head_duplication(
-    relative: &str,
-    source: &str,
-    node: Node,
-    violations: &mut Vec<Violation>,
-) {
-    if node
-        .parent()
-        .is_some_and(|parent| parent.kind() == "else_clause")
+fn analyze_collapsible_if(relative: &str, node: Node, violations: &mut Vec<Violation>) {
+    if node.kind() == "if_let_expression"
+        || is_else_if(node)
+        || node.child_by_field_name("initializer").is_some()
+        || node.child_by_field_name("alternative").is_some()
+        || (0..node.named_child_count()).any(|i| {
+            node.named_child(i as u32)
+                .is_some_and(|c| matches!(c.kind(), "elif_clause" | "else_clause"))
+        })
     {
         return;
     }
-    let mut branches: Vec<(Option<Node>, Node)> = Vec::new();
+    let Some(consequence) = node.child_by_field_name("consequence") else {
+        return;
+    };
+    let statements = meaningful_statements(consequence);
+    let [inner] = statements.as_slice() else {
+        return;
+    };
+    if inner.kind() != "if_statement"
+        || inner.child_by_field_name("initializer").is_some()
+        || inner.child_by_field_name("alternative").is_some()
+        || (0..inner.named_child_count()).any(|i| {
+            inner
+                .named_child(i as u32)
+                .is_some_and(|c| matches!(c.kind(), "elif_clause" | "else_clause"))
+        })
+    {
+        return;
+    }
+    let mut violation = Violation::new(
+        "BCS005",
+        relative,
+        node.start_position().row + 1,
+        node.start_position().column + 1,
+        "collapsible nested if statements",
+        "nested_if",
+        "combined_condition",
+        false,
+    );
+    violation.mark_taste_warning("control-flow");
+    violations.push(violation);
+}
+
+fn analyze_identical_adjacent_arms(
+    relative: &str,
+    source: &str,
+    branches: &[(Option<Node>, Node)],
+    violations: &mut Vec<Violation>,
+) {
+    for pair in branches.windows(2) {
+        let [(Some(cond_a), body_a), (Some(cond_b), body_b)] = pair else {
+            continue;
+        };
+        if has_type_narrowing(source, *cond_a) || has_type_narrowing(source, *cond_b) {
+            continue;
+        }
+        if expression_key(source, *body_a) != expression_key(source, *body_b) {
+            continue;
+        }
+        let mut violation = Violation::new(
+            "BCS016",
+            relative,
+            cond_a.start_position().row + 1,
+            cond_a.start_position().column + 1,
+            "adjacent branches have identical bodies",
+            "identical_branch_bodies",
+            "merged_condition",
+            false,
+        );
+        violation.mark_taste_warning("symmetry");
+        violations.push(violation);
+    }
+}
+
+fn has_type_narrowing(source: &str, node: Node) -> bool {
+    let text = node_text(source, node);
+    if text.contains("typeof ") || text.contains("isinstance(") || text.contains(":=") {
+        return true;
+    }
+    matches!(node.kind(), "if_let_expression" | "let_condition")
+}
+
+type IfBranches<'a> = Vec<(Option<Node<'a>>, Node<'a>)>;
+
+fn collect_if_branches(node: Node<'_>) -> Option<(IfBranches<'_>, bool)> {
+    if is_else_if(node) {
+        return None;
+    }
+    let mut branches = Vec::new();
     let mut current = node;
     let exhaustive = loop {
         let condition = current.child_by_field_name("condition");
-        let Some(consequence) = current.child_by_field_name("consequence") else {
-            return;
-        };
+        let consequence = current.child_by_field_name("consequence")?;
         branches.push((condition, consequence));
-        let has_flat_alternatives = (0..current.named_child_count()).any(|index| {
+        if (0..current.named_child_count()).any(|i| {
             current
-                .named_child(index as u32)
-                .is_some_and(|child| matches!(child.kind(), "elif_clause" | "else_clause"))
-        });
-        if has_flat_alternatives {
+                .named_child(i as u32)
+                .is_some_and(|c| matches!(c.kind(), "elif_clause" | "else_clause"))
+        }) {
             let mut has_else = false;
             for index in 0..current.named_child_count() {
                 let Some(child) = current.named_child(index as u32) else {
@@ -931,16 +1150,13 @@ fn analyze_branch_head_duplication(
                 };
                 match child.kind() {
                     "elif_clause" => {
-                        let Some(body) = child.child_by_field_name("consequence") else {
-                            return;
-                        };
-                        branches.push((child.child_by_field_name("condition"), body));
+                        branches.push((
+                            child.child_by_field_name("condition"),
+                            child.child_by_field_name("consequence")?,
+                        ));
                     }
                     "else_clause" => {
-                        let Some(body) = meaningful_statements(child).into_iter().next() else {
-                            return;
-                        };
-                        branches.push((None, body));
+                        branches.push((None, meaningful_statements(child).into_iter().next()?));
                         has_else = true;
                     }
                     _ => {}
@@ -948,18 +1164,12 @@ fn analyze_branch_head_duplication(
             }
             break has_else;
         }
-        let Some(alternative) = current.child_by_field_name("alternative") else {
-            break false;
-        };
-        match alternative.kind() {
-            "if_statement" | "if_expression" => {
-                current = alternative;
-            }
-            "else_clause" => {
-                let meaningful = meaningful_statements(alternative);
-                let Some(&child) = meaningful.first() else {
-                    return;
-                };
+        let alternative = current.child_by_field_name("alternative");
+        match alternative.map(|alt| alt.kind()) {
+            Some("if_statement" | "if_expression") => current = alternative?,
+            Some("else_clause") => {
+                let alt = alternative?;
+                let child = meaningful_statements(alt).into_iter().next()?;
                 if matches!(child.kind(), "if_statement" | "if_expression") {
                     current = child;
                 } else {
@@ -967,24 +1177,35 @@ fn analyze_branch_head_duplication(
                     break true;
                 }
             }
-            _ => {
-                branches.push((None, alternative));
+            Some(_) => {
+                branches.push((None, alternative?));
                 break true;
             }
+            None => break false,
         }
     };
+    Some((branches, exhaustive))
+}
+
+fn analyze_branch_head_duplication(
+    relative: &str,
+    source: &str,
+    node: Node,
+    branches: &[(Option<Node>, Node)],
+    violations: &mut Vec<Violation>,
+) {
+    if branches.len() < 2 {
+        return;
+    }
     let mut calls: Vec<(String, String)> = Vec::new();
     for (condition, body) in branches {
         if condition.is_some_and(has_expression_side_effect) {
             return;
         }
-        let Some(call) = leading_pure_call(source, body) else {
+        let Some(call) = leading_pure_call(source, *body) else {
             return;
         };
         calls.push(call);
-    }
-    if !exhaustive || calls.len() < 2 {
-        return;
     }
     let Some((first_key, first_display)) = calls.first() else {
         return;
@@ -1292,6 +1513,153 @@ fn analyze_goto(
     }
 }
 
+fn is_verbose_rethrow(source: &str, handler: Node, statement: Node) -> bool {
+    let kind = statement.kind();
+    if !matches!(kind, "raise_statement" | "throw_statement") {
+        return false;
+    }
+    let Some(argument) = meaningful_statements(statement).into_iter().next() else {
+        return false;
+    };
+    if argument.kind() != "identifier" {
+        return false;
+    }
+    let name = node_text(source, argument);
+    if handler.kind() == "except_clause" {
+        let alias = handler.child_by_field_name("alias").or_else(|| {
+            let value = handler.child_by_field_name("value")?;
+            (value.kind() == "as_pattern")
+                .then(|| value.child_by_field_name("alias"))
+                .flatten()
+        });
+        return alias.is_some_and(|node| node_text(source, node).trim() == name);
+    }
+    handler
+        .child_by_field_name("parameter")
+        .or_else(|| find_named_child_kind(handler, "parameter_declaration"))
+        .is_some_and(|param| node_text(source, param).contains(name))
+}
+
+fn analyze_try_rethrow(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
+    let mut handlers = 0;
+    let mut only_rethrows = true;
+    for index in 0..node.named_child_count() {
+        let Some(child) = node.named_child(index as u32) else {
+            continue;
+        };
+        match child.kind() {
+            "except_clause" | "catch_clause" => {
+                handlers += 1;
+                let Some(body) = child
+                    .child_by_field_name("body")
+                    .or_else(|| find_named_child_kind(child, "block"))
+                else {
+                    only_rethrows = false;
+                    continue;
+                };
+                let statements = meaningful_statements(body);
+                if statements.len() != 1
+                    || !matches!(node_text(source, statements[0]).trim(), "raise" | "throw;")
+                {
+                    only_rethrows = false;
+                }
+            }
+            "else_clause" | "finally_clause" => only_rethrows = false,
+            _ => {}
+        }
+    }
+    if handlers == 0 || !only_rethrows {
+        return;
+    }
+    let mut violation = Violation::new(
+        "BCS013",
+        relative,
+        node.start_position().row + 1,
+        node.start_position().column + 1,
+        "useless try block that only rethrows",
+        "rethrow_only_try",
+        "delete_try_wrapper",
+        false,
+    );
+    violation.mark_taste_warning("control-flow");
+    violations.push(violation);
+}
+
+fn has_assert_side_effect(node: Node) -> bool {
+    let kind = node.kind();
+    if matches!(
+        kind,
+        "named_expression"
+            | "assignment"
+            | "augmented_assignment"
+            | "assignment_expression"
+            | "update_expression"
+    ) {
+        return true;
+    }
+    (0..node.named_child_count()).any(|index| {
+        node.named_child(index as u32)
+            .is_some_and(|child| child.kind() != "comment" && has_assert_side_effect(child))
+    })
+}
+
+fn push_assert_side_effect(relative: &str, node: Node, violations: &mut Vec<Violation>) {
+    let mut violation = Violation::new(
+        "BCS006",
+        relative,
+        node.start_position().row + 1,
+        node.start_position().column + 1,
+        "assertion condition must not contain explicit side effects",
+        "assert_side_effect",
+        "separate_statement_before_assert",
+        false,
+    );
+    violation.mark_high_confidence_violation();
+    violations.push(violation);
+}
+
+fn analyze_assert_call_side_effects(
+    relative: &str,
+    source: &str,
+    node: Node,
+    violations: &mut Vec<Violation>,
+) {
+    let Some(callee) = node
+        .child_by_field_name("function")
+        .map(|function| node_text(source, function))
+    else {
+        return;
+    };
+    if !matches!(callee, "assert" | "static_assert" | "_Static_assert") {
+        return;
+    }
+    if let Some(arguments) = node.child_by_field_name("arguments")
+        && has_assert_side_effect(arguments)
+    {
+        push_assert_side_effect(relative, node, violations);
+    }
+}
+
+fn in_cfg_test_module(source: &str, node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "mod_item" {
+            let mut sibling = parent.prev_named_sibling();
+            while let Some(attr) = sibling {
+                if attr.kind() != "attribute_item" {
+                    break;
+                }
+                if node_text(source, attr).contains("cfg(test)") {
+                    return true;
+                }
+                sibling = attr.prev_named_sibling();
+            }
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<Violation>) {
     let Some(body) = node
         .child_by_field_name("body")
@@ -1323,6 +1691,20 @@ fn analyze_catch(relative: &str, source: &str, node: Node, violations: &mut Vec<
     let rethrow_only = statements
         .iter()
         .all(|statement| matches!(node_text(source, *statement).trim(), "raise" | "throw;"));
+    if statements.len() == 1 && is_verbose_rethrow(source, node, statements[0]) {
+        let mut violation = Violation::new(
+            "BCS013",
+            relative,
+            node.start_position().row + 1,
+            node.start_position().column + 1,
+            "redundant exception rethrow; use bare raise/throw or remove the handler",
+            "verbose_rethrow",
+            "bare_rethrow_or_delete",
+            false,
+        );
+        violation.mark_taste_warning("control-flow");
+        violations.push(violation);
+    }
     if catch_all && !rethrow_only {
         push(
             violations,
@@ -1563,9 +1945,13 @@ fn analyze_import(
         let init_reexport = language == Language::Python
             && relative.ends_with("__init__.py")
             && text.trim_start().starts_with("from .");
+        let rust_allowed_wildcard = language == Language::Rust
+            && (text.trim_start().starts_with("pub use ")
+                || (text.contains("super::*") && in_cfg_test_module(source, node)));
         if diagnostics
             && (binding.as_deref() == Some("*") || text.contains("import *"))
             && !init_reexport
+            && !rust_allowed_wildcard
         {
             push(
                 &mut result.violations,

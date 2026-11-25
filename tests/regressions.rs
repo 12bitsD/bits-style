@@ -530,7 +530,7 @@ fn bcs016_detects_only_exhaustive_pure_branch_head_duplication() {
     let results = scan("js", js);
     assert!(results.iter().any(|r| r["rule_id"] == "BCS016"));
 
-    let no_else = "def run(command: str, h: object) -> None:\n    if command == \"a\":\n        h.check()\n    elif command == \"b\":\n        h.check()\n";
+    let no_else = "def run(command: str, h: object) -> None:\n    if command == \"a\":\n        h.check_a()\n    elif command == \"b\":\n        h.check_b()\n";
     assert_no_rule(&scan("py", no_else), "BCS016");
 
     let impure = "def run(mode: object, h: object) -> int:\n    if next_mode() == 1:\n        h.check()\n        return 1\n    else:\n        h.check()\n        return 2\n";
@@ -560,7 +560,7 @@ fn bits_prove_marks_warnings_for_critic_and_rejects_hard_violations() {
     fs::write(
         &long_fn,
         format!(
-            "# bits:prove(BCS003, test=test_lock): shared lock; split unlocks\ndef step() -> int:\n    cursor = 0\n{body}    return cursor\n"
+            "# bits:prove(BCS003, test=test_lock): shared lock; split unlocks\ndef step() -> int:\n    cursor = 0\n{body}    return cursor\n\n\ndef test_lock() -> None:\n    assert step() == 49\n"
         ),
     )
     .unwrap();
@@ -833,6 +833,177 @@ fn improving_ratchet_rewards_reduction_but_blocks_regressions_and_new_functions(
         "json",
     ]);
     assert_eq!(output.status.code(), Some(1));
+}
+
+#[test]
+fn cognitive_v1_matches_sonar_whitepaper_golden_cases() {
+    let flat_match = format!(
+        "def route(code: int) -> int:\n    match code:\n{}        case _:\n            return 0\n",
+        (1..=12)
+            .map(|i| format!("        case {i}:\n            return {i}\n"))
+            .collect::<String>()
+    );
+    assert_no_rule(&scan("py", &flat_match), "BCS003");
+
+    let py_chain = "def f(x: int) -> int:\n    if x == 1:\n        return 1\n    elif x == 2:\n        return 2\n    elif x == 3:\n        return 3\n    else:\n        return 4\n";
+    let js_chain = "function f(x) {\n  if (x === 1) {\n    return 1;\n  } else if (x === 2) {\n    return 2;\n  } else if (x === 3) {\n    return 3;\n  } else {\n    return 4;\n  }\n}\n";
+    assert_no_rule(&scan("py", py_chain), "BCS003");
+    assert_no_rule(&scan("js", js_chain), "BCS003");
+
+    let nested = "def deep(a: int) -> int:\n    for i in range(a):\n        for j in range(i):\n            if j % 3 == 0:\n                i += j\n    return a\n";
+    assert_no_rule(&scan("py", nested), "BCS003");
+
+    let bool_mix = "function f(a, b, c, d, e, f) {\n  if (a && b && c || d || e && f) {\n    return 1;\n  }\n  return 0;\n}\n";
+    assert_no_rule(&scan("js", bool_mix), "BCS003");
+
+    let high_cognitive = format!(
+        "function hot(x) {{\n{}  return x;\n}}\n",
+        "  if (x > 0) {\n    for (let i = 0; i < x; i += 1) {\n      if (i % 2 === 0 && x > 10 || i === 3) {\n        x -= 1;\n      }\n    }\n  }\n".repeat(5)
+    );
+    let results = scan("js", &high_cognitive);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS003"
+            && r["message"] == "cognitive complexity exceeds fifteen (cognitive_v1 shadow)"
+            && r["severity"] == "warning"
+    }));
+}
+
+#[test]
+fn collapsible_if_identical_arms_and_useless_rethrow_are_warnings() {
+    let collapsible = "def f(ready: bool, user: object) -> None:\n    if ready:\n        if is_allowed(user):\n            grant(user)\n";
+    let results = scan("py", collapsible);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS005"
+            && r["message"] == "collapsible nested if statements"
+            && r["severity"] == "warning"
+    }));
+    let with_else = "def f(ready: bool, user: object) -> None:\n    if ready:\n        if is_allowed(user):\n            grant(user)\n        else:\n            deny(user)\n";
+    assert_no_rule(&scan("py", with_else), "BCS005");
+
+    let same_arms = "def f(kind: str, event: object) -> None:\n    if kind == \"a\":\n        record(event)\n    elif kind == \"b\":\n        record(event)\n    else:\n        ignore(event)\n";
+    assert!(scan("py", same_arms).iter().any(|r| {
+        r["rule_id"] == "BCS016" && r["message"] == "adjacent branches have identical bodies"
+    }));
+    let narrowing = "function f(x: unknown) {\n  if (typeof x === \"string\") {\n    console.log(x.length);\n  } else if (typeof x === \"number\") {\n    console.log(x.length);\n  }\n}\n";
+    assert_no_rule(&scan("ts", narrowing), "BCS016");
+
+    let useless_try =
+        "def f() -> None:\n    try:\n        work()\n    except Error:\n        raise\n";
+    assert!(scan("py", useless_try).iter().any(|r| {
+        r["rule_id"] == "BCS013" && r["message"] == "useless try block that only rethrows"
+    }));
+    let verbose =
+        "def f() -> None:\n    try:\n        work()\n    except Error as exc:\n        raise exc\n";
+    assert!(scan("py", verbose).iter().any(|r| {
+        r["rule_id"] == "BCS013"
+            && r["message"]
+                == "redundant exception rethrow; use bare raise/throw or remove the handler"
+    }));
+    let logging = "def f() -> None:\n    try:\n        work()\n    except Error as exc:\n        log(exc)\n        raise\n";
+    assert_no_rule(&scan("py", logging), "BCS013");
+}
+
+#[test]
+fn assertion_explicit_side_effects_are_hard_errors_but_pure_calls_pass() {
+    let walrus = "def f() -> None:\n    assert (frame := read_frame())\n";
+    assert!(scan("py", walrus).iter().any(|r| {
+        r["rule_id"] == "BCS006"
+            && r["message"] == "assertion condition must not contain explicit side effects"
+            && r["severity"] == "violation"
+    }));
+    let increment = "assert(i++ > 0);\n";
+    assert!(scan("js", increment).iter().any(|r| {
+        r["rule_id"] == "BCS006"
+            && r["message"] == "assertion condition must not contain explicit side effects"
+    }));
+    let pure =
+        "def f(items: list[int]) -> None:\n    assert len(items) > 0\n    assert is_valid(items)\n";
+    assert_no_rule(&scan("py", pure), "BCS006");
+}
+
+#[test]
+fn prove_test_references_must_resolve_uniquely_and_diff_bans_new_explain() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let missing = "// bits:prove(BCS010): external contract; keeps API\nfunction BadName() {\n  return 1;\n}\n";
+    let with_missing = missing.replace(
+        "bits:prove(BCS010)",
+        "bits:prove(BCS010, test=no_such_test)",
+    );
+    let results = scan("js", &with_missing);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS015"
+            && r["message"] == "bits:prove test reference does not resolve to a known test"
+    }));
+
+    fs::create_dir(root.join("tests")).unwrap();
+    fs::write(root.join("README.md"), "# init\n").unwrap();
+    let body = "    value += 1\n".repeat(49);
+    let explained = format!(
+        "# bits:explain(BCS003): legacy comment\ndef legacy() -> int:\n    value = 0\n{body}    return value\n"
+    );
+    fs::write(root.join("legacy.py"), &explained).unwrap();
+    fs::write(
+        root.join("tests/test_step.py"),
+        "def test_step_atomicity() -> None:\n    assert True\n",
+    )
+    .unwrap();
+    init_diff_repo(root);
+
+    // Whole-file scan still accepts legacy bits:explain (no repo-wide breakage).
+    let output = bits(&["style", "check", root.join("legacy.py").to_str().unwrap()]);
+    assert_eq!(output.status.code(), Some(0));
+
+    // Adding a new bits:explain in diff mode is a hard error.
+    let new_explain = explained.replace("def legacy(", "def added(");
+    fs::write(root.join("added.py"), new_explain).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+    assert!(
+        json(&output)["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| {
+                r["rule_id"] == "BCS015"
+                    && r["message"] == "new bits:explain is forbidden in diff mode"
+            })
+    );
+
+    // A new bits:prove referencing an unchanged test in tests/ resolves cleanly in diff mode.
+    fs::remove_file(root.join("added.py")).unwrap();
+    let proven = format!(
+        "# bits:prove(BCS003, test=test_step_atomicity): shared lock; split unlocks\ndef step() -> int:\n    value = 0\n{body}    return value\n"
+    );
+    fs::write(root.join("step.py"), proven).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(0), "{:#?}", json(&output));
+}
+
+#[test]
+fn rust_prelude_reexports_and_test_super_wildcards_are_allowed() {
+    let source = "pub use prelude::*;\n\n#[cfg(test)]\nmod tests {\n    use super::*;\n}\n";
+    assert_no_rule(&scan("rs", source), "BCS014");
+    let private_wildcard = "use other::*;\n";
+    assert!(
+        scan("rs", private_wildcard)
+            .iter()
+            .any(|r| r["rule_id"] == "BCS014")
+    );
 }
 
 fn scan_dir(root: &Path) -> Value {

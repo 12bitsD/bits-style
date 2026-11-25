@@ -4,3 +4,17 @@ indent-width = 4
 [format]
 indent-style = "space"
 line-ending = "lf"
+
+[lint]
+# Deduplication contract:
+# Cross-language structural rules (SIM102 collapsible-if, SIM114 identical arms,
+# RET505 redundant-else, TRY201/TRY203 useless rethrow, FBT boolean traps) are
+# owned by Bits L1 (BCS004/BCS005/BCS013/BCS016) so all languages share one
+# report/proof protocol. Enable only Python-specific hygiene here.
+select = [
+  "F",
+  "B006",
+  "PLR1714",
+  "PIE790",
+]
+unfixable = ["ALL"]

@@ -21,7 +21,13 @@ Profile 只决定代码形式和工具映射，不削弱 AUTO-CORE 语义规则�
 
 Go 使用独立的语义规范 [`profiles/go.md`](../profiles/go.md)，不增加重复格式配置。
 
-这些文件只覆盖格式底线。语义检查由 `bits` 和各语言编译器/linter 共同完成，不能仅用 formatter 宣称全部 BCS 通过。
+这些文件覆盖格式底线与 L0 卫生检查。语义与结构检查由 `bits`（L1）和各语言编译器/linter 共同完成，不能仅用 formatter 宣称全部 BCS 通过。
+
+### L0 / L1 去重契约（以 Python 为例）
+
+`profiles/python-ruff.toml` 只开启 Python 特有的卫生规则：`F`（Pyflakes）、`B006`（可变默认参数）、`PLR1714`（重复相等比较）、`PIE790`（多余 `pass`），并设置 `unfixable = ["ALL"]` 禁止自动改写语义。
+
+跨语言结构规则——`SIM102`（可折叠 `if`）、`SIM114`（同体分支）、`RET505`（冗余 `else`）、`TRY201/TRY203`（无效重抛）、`FBT`（布尔陷阱）——**统一由 Bits L1 拥有**（`BCS004/005/013/016`），不在 Ruff 模板中重复开启，保证所有语言共享同一份 JSON 报告与 `bits:prove` 协议，且同一行代码不会双重告警。
 
 ## Python 数据契约
 

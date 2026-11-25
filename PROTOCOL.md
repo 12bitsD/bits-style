@@ -50,7 +50,8 @@ bits style check --diff --commit 61a5793 src
 - 未跟踪文件按全文件检查；纯删除且没有新增行的文件不进入扫描。
 - 为检查新增依赖环，按需解析本地 import 可达的未变更文件作为只读上下文。上下文不计入 `files_scanned`、coverage 或 unsupported，其普通违规和解析错误不进入 diff 报告；只有与新增/修改行相交的依赖环诊断会被保留。
 - `--changed` 和 `--staged` 保持原有的整文件扫描行为。
-- **`improving` 棘轮**：对基线 commit 中已存在的同名函数，若 `BCS003` 的嵌套层数或圈复杂度仍超阈值但相对基线**严格下降**，扫描器读取 `git show <base>:./<file>` 比对后，将该诊断置为 `improving = true`、`severity = warning`、`obligation = ratchet_improving`，不阻断 `check`。新函数或指标持平/恶化仍为硬错误。
+- **`improving` 棘轮**：按 `(函数名, 同名出现序号)` 匹配基线 commit 中的已存在函数（不受行号移动影响）；若 `BCS003` 的嵌套层数、圈复杂度或认知复杂度观测值仍超阈值但相对基线**严格下降**，扫描器读取 `git show <base>:./<file>` 比对后，将该诊断置为 `improving = true`、`severity = warning`、`obligation = ratchet_improving`，不阻断 `check`。新函数、改名函数或指标持平/恶化仍为硬错误。
+- **测试只读上下文**：diff 模式除 import 可达文件外，还将未变更的测试文件（`tests/`、`test_*`、`*.test.*` 等）纳入只读上下文，用于解析 `bits:prove(..., test=X)`。
 
 文件发现遵循 `.gitignore`，排除 `.git/`、依赖目录、构建产物、明确的生成代码和目录符号链接。同一文件规范化后只扫描一次。没有匹配文件属于成功扫描。
 
@@ -73,6 +74,8 @@ bits style check --diff --commit 61a5793 src
 - `explanation`：可选的说明文本，来自 `bits:prove` 或兼容的 `bits:explain(BCS003)`；warning 缺失说明时文本报告输出温和提示，不强制要求补注释。
 - `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
 - `summary.warnings`、`summary.unsupported_files`、`summary.proves` 和 `summary.improving` 分别统计 warning、unsupported 文件、处于 `critic_review` 的举证数和命中棘轮的诊断数。
+- `summary.functions_checked` 与 `summary.functions_with_warnings` 提供函数级分母；`bits bench` 据此计算 Warning 误报函数占比，并输出 `cognitive_v1` 认知复杂度的 P50/P90/P95/P99/max 分布。
+- `BCS003` 当前保留圈复杂度 >10 与嵌套 >3 硬错误以兼容存量 baseline，同时对 `cognitive_v1 > 15` 输出高置信 shadow warning，待跨语言基准分布校准后再定硬门禁。
 
 ## 3.2 配置文件
 
@@ -119,7 +122,9 @@ bits:prove(BCS003, test=test_lock): cursor 与 checksum 共享锁；拆分导致
   2. **未压中任何告警的 `bits:allow`（墓碑注释）**；
   3. **未命中活跃 warning 的 `bits:prove`（墓碑注释）**；
   4. 使用 `bits:prove` 试图豁免 `severity = violation` 的硬错误；
-  5. `--diff` 模式下新增 `bits:prove` 超过 **1** 条配额。
+  5. `--diff` 模式下新增 `bits:prove` 超过 **1** 条配额；
+  6. `bits:prove(..., test=X)` 中的 `X` 无法通过 AST 唯一解析到真实测试定义（Python `test_*`/`Test*.test_*`、TS `test()/it()`、Rust `#[test]`）；
+  7. `--diff` 模式下新增 legacy `bits:explain`（存量全量扫描仍兼容）。
 - 禁止文件级、目录级 blanket suppression。
 
 ## 6. 存量 baseline
@@ -144,7 +149,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.4.1" },
+  "tool": { "name": "bits", "version": "0.4.2" },
   "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {

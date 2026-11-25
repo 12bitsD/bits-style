@@ -81,3 +81,42 @@ bits bench --offline  # 使用本地缓存复跑，保证可复现
 
 - **`BCS017` 纯度污点传播**：`bits:spec(pure)` + 内置/配置 `io_sources`，沿同文件与真实 import 调用图传播 IO 污点，触污报硬错误；在三库 117 个文件上 **0 误报**。
 - **`improving` 棘轮**：`--diff` 下已存在函数的 `BCS003` 嵌套/圈复杂度严格低于基线 commit 时标记 `improving = true` 并降级为 warning，鼓励存量代码持续做减法；新函数与恶化改动仍硬拦截。
+
+---
+
+# V0.4.2 业界标准吸收与认知复杂度分布实测（Python 打通）
+
+## `cognitive_v1` 认知复杂度分布（三库共 1,942 个函数）
+
+按 SonarSource 白皮书原教旨实现（结构节点 `1 + 嵌套`、混合节点 `+1`、逻辑序列/标签跳转/直接自递归/match guard `+1`、整个 `match/switch` 只计一次），实测分布如下：
+
+| 分位数 / 阈值 | 数值 / 占比 |
+|---|---:|
+| P50 | **1** |
+| P90 | **8** |
+| P95 | **13** |
+| P99 | **34** |
+| Max | **119** |
+| `> 10` 的函数占比 | 7.16% |
+| `> 15` 的函数占比 | **3.86%** |
+| `> 20` 的函数占比 | 2.37% |
+| `> 25` 的函数占比 | 1.75% |
+
+**阈值决策**：遵循“先用分布反推阈值，不拍脑袋设硬门禁”的纪律。若按 11 起步报警会波及约 7% 的正常函数，噪声过大；**15 位于 P95（13）与 P99（34）之间**，因此本轮将 `cognitive_v1 > 15` 设为高置信 **shadow warning**（不阻断 CI），保留旧圈复杂度 >10 与嵌套 >3 硬错误以兼容存量 baseline，待补齐 Rust/Go 跨语言基准后再评估是否晋升硬门禁。
+
+## 本轮落地的改进
+
+1. **封堵协议后门（P0）**：
+   - `--diff` 新增 `bits:explain` 直接报 `BCS015` 硬错误（全量扫描存量 `explain` 仍兼容）；
+   - `bits:prove(..., test=X)` 通过 AST 唯一解析真实测试定义（支持 Python `test_*`/`Test*.test_*`、TS `test()/it()`、Rust `#[test]`，diff 模式自动索引未变更测试文件）。
+2. **跨语言计分与 Rust 边界修正**：
+   - 统一 JS/C++/Rust `else if` 与 Python `elif` 的嵌套深度，补齐 Rust 控制节点；
+   - 棘轮函数身份升级为 `(函数名, 同名序号)`，避免同名方法碰撞且不受行号移动影响；
+   - 放行 Rust `pub use ...::*` 与 `#[cfg(test)]` 模块内 `use super::*`。
+3. **新增 4 项 L1 检查（三库 0 硬误报）**：
+   - 可折叠双层 `if`（`BCS005` warning，三库共 9 处）；
+   - 相邻同体分支（`BCS016` warning，跳过 `typeof`/`isinstance` 收窄，三库共 2 处）；
+   - 纯重抛 `try` 与 `raise var` 冗余重抛（`BCS013` warning）；
+   - 断言条件显式副作用 `:=`/`=`/`++`（`BCS006` 硬错误，三库 **0 误报**，不误伤 `assert len(x) > 0`）。
+4. **Python L0/L1 去重**：`profiles/python-ruff.toml` 仅开 `F`、`B006`、`PLR1714`、`PIE790` 且 `unfixable = ["ALL"]`，结构规则统一归 Bits L1。
+5. **文档体例**：`STYLE.md` 与 L2 Skill 全面改写为「反例形状 → 维护代价 → 合理例外 + Anti-fix」，纳入 Clippy 分级纪律、Ousterhout 接口税测试与 TigerStyle 契约气闸。

@@ -11,6 +11,8 @@ use crate::discovery::{self, DiscoveredFile, LineScope, Scope};
 use crate::language::Language;
 use crate::model::{FileFix, PassedCheck, RULE_IDS, Report, ScanError, Violation};
 use crate::taint::{self, FunctionFact, IoPolicy};
+use crate::test_index;
+use crate::text::MatchedProve;
 use crate::{report, text};
 
 #[derive(Debug, Parser)]
@@ -111,7 +113,9 @@ struct FileScan {
     partial: BTreeSet<String>,
     not_applicable: BTreeSet<String>,
     line_scope: LineScope,
-    proves: Vec<(usize, String)>,
+    proves: Vec<MatchedProve>,
+    legacy_explains: Vec<usize>,
+    tests: Vec<String>,
     python_package: Option<(String, String)>,
     shapes: Vec<FunctionShape>,
     facts: Vec<FunctionFact>,
@@ -325,13 +329,35 @@ fn scan_report(
     policy: &IoPolicy,
     diff_base: Option<&(PathBuf, String)>,
 ) -> Report {
-    let diff_mode = diff_base.is_some();
     let scans = scan_files(files, jobs, policy);
+    build_report(
+        files,
+        dependency_context,
+        scans,
+        include_passed,
+        unsupported,
+        policy,
+        diff_base,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn build_report(
+    files: &[DiscoveredFile],
+    dependency_context: &[DiscoveredFile],
+    scans: Vec<FileScan>,
+    include_passed: bool,
+    unsupported: &[String],
+    policy: &IoPolicy,
+    diff_base: Option<&(PathBuf, String)>,
+) -> Report {
+    let diff_mode = diff_base.is_some();
     let dependency_scans = scan_dependency_context(&scans, dependency_context, policy);
     let mut report = Report::new();
     report.summary.files_discovered = files.len();
     report.summary.files_scanned = files.len();
     report.summary.unsupported_files = unsupported.len();
+    report.summary.functions_checked = scans.iter().map(|scan| scan.shapes.len()).sum();
     report.unsupported = unsupported.to_vec();
     let mut passed_candidates = BTreeMap::new();
 
@@ -361,8 +387,9 @@ fn scan_report(
     check_purity_contracts(&scans, &dependency_scans, &mut report.results);
     filter_diff_violations(&scans, diff_mode, &mut report.results);
     apply_improving_ratchet(files, &scans, diff_base, &mut report.results);
-    enforce_prove_budget(&scans, diff_mode, &mut report.results);
+    enforce_annotation_policy(&scans, &dependency_scans, diff_mode, &mut report.results);
     report.finish();
+    report.summary.functions_with_warnings = count_warned_functions(&scans, &report.results);
 
     if include_passed {
         for (file, rules) in passed_candidates {
@@ -436,7 +463,11 @@ fn scan_dependency_context(
         .chain(context.keys().copied())
         .collect();
     let mut visited: BTreeSet<String> = scans.iter().map(|scan| scan.relative.clone()).collect();
-    let mut pending = Vec::new();
+    let mut pending: Vec<String> = context
+        .values()
+        .filter(|file| test_index::is_test_file_path(&file.relative))
+        .map(|file| file.relative.clone())
+        .collect();
     for scan in scans {
         for import in &scan.imports {
             let Some(specifier) = analyze::dependency_path(import) else {
@@ -461,7 +492,7 @@ fn scan_dependency_context(
         let Some(file) = context.get(relative.as_str()) else {
             continue;
         };
-        let Some((imports, facts)) = scan_context_file(file, policy) else {
+        let Some((imports, facts, tests)) = scan_context_file(file, policy) else {
             continue;
         };
         let python_package = python_package_context(file);
@@ -480,16 +511,16 @@ fn scan_dependency_context(
             relative,
             imports,
             facts,
+            tests,
             ..FileScan::default()
         });
     }
     output
 }
 
-fn scan_context_file(
-    file: &DiscoveredFile,
-    policy: &IoPolicy,
-) -> Option<(Vec<ImportRecord>, Vec<FunctionFact>)> {
+type ContextScan = (Vec<ImportRecord>, Vec<FunctionFact>, Vec<String>);
+
+fn scan_context_file(file: &DiscoveredFile, policy: &IoPolicy) -> Option<ContextScan> {
     let source = std::fs::read_to_string(&file.absolute).ok()?;
     let tree = file.language.parse(&source).ok()?;
     if tree.root_node().has_error() {
@@ -504,7 +535,8 @@ fn scan_context_file(
         &imports,
         policy,
     );
-    Some((imports, facts))
+    let tests = test_index::collect_tests(file.language, &source, &tree);
+    Some((imports, facts, tests))
 }
 
 fn scan_file(file: &DiscoveredFile, policy: &IoPolicy) -> FileScan {
@@ -559,7 +591,9 @@ fn scan_file(file: &DiscoveredFile, policy: &IoPolicy) -> FileScan {
         &analysis.comments,
     ));
     scan.shapes = analyze::function_shapes(file.language, &source, &tree);
+    scan.tests = test_index::collect_tests(file.language, &source, &tree);
     let comments = analysis.comments.clone();
+    scan.legacy_explains = text::legacy_explanation_lines(&source, &comments);
     merge_analysis(&mut scan, analysis);
     scan.facts = taint::extract_facts(
         file.language,
@@ -574,18 +608,57 @@ fn scan_file(file: &DiscoveredFile, policy: &IoPolicy) -> FileScan {
     scan
 }
 
-pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<Report, String> {
+fn count_warned_functions(scans: &[FileScan], results: &[Violation]) -> usize {
+    let warned: BTreeSet<(&str, usize)> = results
+        .iter()
+        .filter(|violation| violation.severity == "warning")
+        .map(|violation| (violation.file.as_str(), violation.range.start.line))
+        .collect();
+    scans
+        .iter()
+        .flat_map(|scan| {
+            scan.shapes.iter().filter(|shape| {
+                (shape.start_line..=shape.end_line)
+                    .any(|line| warned.contains(&(scan.relative.as_str(), line)))
+            })
+        })
+        .count()
+}
+
+pub struct BenchScan {
+    pub report: Report,
+    pub cognitive_scores: Vec<usize>,
+    pub functions_with_warnings: usize,
+}
+
+pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<BenchScan, String> {
     let discovery = discovery::discover(&[path.to_path_buf()], Scope::All, false, exclude)?;
     let policy = IoPolicy::new(&[])?;
-    Ok(scan_report(
+    let jobs = default_jobs();
+    let scans = scan_files(&discovery.files, jobs, &policy);
+    let cognitive_scores = scans
+        .iter()
+        .flat_map(|scan| scan.shapes.iter().map(|shape| shape.cognitive))
+        .collect();
+    let mut report = build_report(
         &discovery.files,
         &[],
-        default_jobs(),
+        scans,
         false,
         &discovery.unsupported,
         &policy,
         None,
-    ))
+    );
+    report
+        .results
+        .retain(|violation| !crate::bench::is_format_rule(&violation.rule_id));
+    report.finish();
+    let functions_with_warnings = report.summary.functions_with_warnings;
+    Ok(BenchScan {
+        report,
+        cognitive_scores,
+        functions_with_warnings,
+    })
 }
 
 fn check_purity_contracts(
@@ -636,7 +709,8 @@ fn apply_improving_ratchet(
         .iter()
         .map(|scan| (scan.relative.as_str(), scan))
         .collect();
-    let mut cache: BTreeMap<String, Option<BTreeMap<String, FunctionShape>>> = BTreeMap::new();
+    type ShapeMap = BTreeMap<(String, usize), FunctionShape>;
+    let mut cache: BTreeMap<String, Option<ShapeMap>> = BTreeMap::new();
     for violation in violations.iter_mut() {
         let Some(&language) = languages.get(violation.file.as_str()) else {
             continue;
@@ -658,10 +732,19 @@ fn apply_improving_ratchet(
     }
 }
 
+fn shape_key(shapes: &[FunctionShape], target: &FunctionShape) -> (String, usize) {
+    let ordinal = shapes
+        .iter()
+        .take_while(|shape| shape.start_line < target.start_line)
+        .filter(|shape| shape.name == target.name)
+        .count();
+    (target.name.clone(), ordinal)
+}
+
 fn ratchet_improved(
     violation: &Violation,
     scan: &FileScan,
-    base_shapes: &BTreeMap<String, FunctionShape>,
+    base_shapes: &BTreeMap<(String, usize), FunctionShape>,
 ) -> bool {
     if violation.rule_id != "BCS003" {
         return false;
@@ -674,12 +757,15 @@ fn ratchet_improved(
     else {
         return false;
     };
-    let Some(previous) = base_shapes.get(&current.name) else {
+    let Some(previous) = base_shapes.get(&shape_key(&scan.shapes, current)) else {
         return false;
     };
     match violation.message.as_str() {
         "control-flow nesting exceeds three levels" => current.nesting < previous.nesting,
         "cyclomatic complexity exceeds ten" => current.complexity < previous.complexity,
+        "cognitive complexity exceeds fifteen (cognitive_v1 shadow)" => {
+            current.cognitive < previous.cognitive
+        }
         _ => false,
     }
 }
@@ -689,7 +775,7 @@ fn load_base_shapes(
     base: &str,
     relative: &str,
     language: Language,
-) -> Option<BTreeMap<String, FunctionShape>> {
+) -> Option<BTreeMap<(String, usize), FunctionShape>> {
     let output = Command::new("git")
         .current_dir(root)
         .args([
@@ -710,28 +796,81 @@ fn load_base_shapes(
     if tree.root_node().has_error() {
         return None;
     }
-    Some(
-        analyze::function_shapes(language, &source, &tree)
-            .into_iter()
-            .map(|shape| (shape.name.clone(), shape))
-            .collect(),
-    )
+    let shapes = analyze::function_shapes(language, &source, &tree);
+    let mut seen: BTreeMap<String, usize> = BTreeMap::new();
+    let mut indexed = BTreeMap::new();
+    for shape in shapes {
+        let ordinal = seen.entry(shape.name.clone()).or_default();
+        indexed.insert((shape.name.clone(), *ordinal), shape);
+        *ordinal += 1;
+    }
+    Some(indexed)
 }
 
-fn enforce_prove_budget(scans: &[FileScan], diff_mode: bool, violations: &mut Vec<Violation>) {
+fn is_added_line(scope: &LineScope, line: usize) -> bool {
+    match scope {
+        LineScope::Added(lines) => lines.contains(&line),
+        LineScope::WholeFile => true,
+    }
+}
+
+fn enforce_annotation_policy(
+    scans: &[FileScan],
+    context: &[FileScan],
+    diff_mode: bool,
+    violations: &mut Vec<Violation>,
+) {
+    let mut test_counts: BTreeMap<&str, usize> = BTreeMap::new();
+    for test in scans.iter().chain(context.iter()).flat_map(|s| &s.tests) {
+        *test_counts.entry(test.as_str()).or_default() += 1;
+    }
+    for scan in scans {
+        for prove in &scan.proves {
+            if let Some(test) = &prove.test {
+                let count = test_counts.get(test.as_str()).copied().unwrap_or(0);
+                if count != 1 {
+                    let message = if count == 0 {
+                        "bits:prove test reference does not resolve to a known test"
+                    } else {
+                        "bits:prove test reference is ambiguous"
+                    };
+                    violations.push(Violation::new(
+                        "BCS015",
+                        &scan.relative,
+                        prove.line,
+                        1,
+                        message,
+                        format!("test={test}"),
+                        "unique_test_definition",
+                        false,
+                    ));
+                }
+            }
+        }
+    }
     if !diff_mode {
         return;
     }
     const PROVE_BUDGET: usize = 1;
     let mut added = Vec::new();
     for scan in scans {
-        for (line, rule) in &scan.proves {
-            let is_new = match &scan.line_scope {
-                LineScope::Added(lines) => lines.contains(line),
-                LineScope::WholeFile => true,
-            };
-            if is_new {
-                added.push((scan.relative.as_str(), *line, rule.as_str()));
+        for line in &scan.legacy_explains {
+            if is_added_line(&scan.line_scope, *line) {
+                violations.push(Violation::new(
+                    "BCS015",
+                    &scan.relative,
+                    *line,
+                    1,
+                    "new bits:explain is forbidden in diff mode",
+                    "bits:explain",
+                    "bits:prove(BCS003[, test=name]): minimal reason; concrete risk",
+                    false,
+                ));
+            }
+        }
+        for prove in &scan.proves {
+            if is_added_line(&scan.line_scope, prove.line) {
+                added.push((scan.relative.as_str(), prove.line, prove.rule.as_str()));
             }
         }
     }

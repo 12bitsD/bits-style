@@ -146,6 +146,10 @@ pub struct Summary {
     pub proves: usize,
     #[serde(default)]
     pub improving: usize,
+    #[serde(default)]
+    pub functions_checked: usize,
+    #[serde(default)]
+    pub functions_with_warnings: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -316,10 +316,18 @@ fn looks_like_commented_code(text: &str) -> bool {
         && body.len() < 240
 }
 
+#[derive(Debug, Clone)]
+pub struct MatchedProve {
+    pub line: usize,
+    pub rule: String,
+    pub test: Option<String>,
+}
+
 struct InlineAnnotation {
     rule: String,
     line: usize,
     payload: String,
+    test: Option<String>,
     used: bool,
 }
 
@@ -376,6 +384,7 @@ fn parse_allow(text: &str, line: usize, regex: &Regex) -> Result<InlineAnnotatio
         rule: captures[1].to_owned(),
         line,
         payload: String::new(),
+        test: None,
         used: false,
     })
 }
@@ -386,14 +395,16 @@ fn parse_prove(text: &str, line: usize, regex: &Regex) -> Result<InlineAnnotatio
         .ok_or("proof must state minimal form and concrete risk in two parts")?;
     let minimal = captures[3].trim();
     let risk = captures[4].trim();
-    let payload = match captures.get(2) {
-        Some(test) => format!("{minimal}; {risk} [test={}]", test.as_str()),
+    let test = captures.get(2).map(|m| m.as_str().to_owned());
+    let payload = match &test {
+        Some(test) => format!("{minimal}; {risk} [test={test}]"),
         None => format!("{minimal}; {risk}"),
     };
     Ok(InlineAnnotation {
         rule: captures[1].to_owned(),
         line,
         payload,
+        test,
         used: false,
     })
 }
@@ -446,7 +457,7 @@ fn apply_proofs(
     violations: &mut [Violation],
     proves: &mut [InlineAnnotation],
     extra: &mut Vec<Violation>,
-) -> Vec<(usize, String)> {
+) -> Vec<MatchedProve> {
     let mut matched = Vec::new();
     for violation in violations {
         let Some(annotation) = proves
@@ -459,7 +470,11 @@ fn apply_proofs(
         if violation.severity == "warning" {
             violation.explanation = Some(annotation.payload.clone());
             violation.obligation = Some("critic_review".to_owned());
-            matched.push((annotation.line, annotation.rule.clone()));
+            matched.push(MatchedProve {
+                line: annotation.line,
+                rule: annotation.rule.clone(),
+                test: annotation.test.clone(),
+            });
         } else {
             extra.push(annotation_error(
                 relative,
@@ -473,12 +488,23 @@ fn apply_proofs(
     matched
 }
 
+pub fn legacy_explanation_lines(source: &str, comments: &[Range<usize>]) -> Vec<usize> {
+    comments
+        .iter()
+        .filter_map(|range| {
+            let text = source.get(range.clone())?;
+            text.contains("bits:explain")
+                .then(|| point_at(source, range.start).0)
+        })
+        .collect()
+}
+
 pub fn apply_inline_suppressions(
     relative: &str,
     source: &str,
     comments: &[Range<usize>],
     violations: &mut Vec<Violation>,
-) -> Vec<(usize, String)> {
+) -> Vec<MatchedProve> {
     let (mut allows, mut proves) = parse_inline_annotations(relative, source, comments, violations);
     violations.retain(|violation| {
         if let Some(annotation) = allows

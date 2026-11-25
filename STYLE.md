@@ -14,27 +14,51 @@
 4. **以修复后结果论英雄**：一条规则的好坏，看 Agent 按它修完后代码是否真的更干净，而不是拆成两行碎片或堆满注释。
 5. **从真实痛点生长，用顶级代码校准**：只从真实 Review 提炼规则，上线前必须通过开源标杆库的误报拷打。
 
-### 0.2 优雅的四个可计算维度
+### 0.2 优雅的四个维度（反例 → 代价 → 例外）
 
-| 维度 | 优雅定义 | 不优雅信号 | L2 Critic 追问 |
-|---|---|---|---|
-| **层级纯度** | 一个函数只在一个抽象高度说话 | 高层编排与底层拼装/局部 import 混杂 | 有没有哪几行突然比周围低了一个层级？ |
-| **控制流平直度** | 主路一条直线，分支只做真实决策 | 箭头嵌套、分支模拟查表、框架已分发又二次分发 | 这些分支是在做业务决策，还是在重复表/框架的工作？ |
-| **信息增益** | 只为本层决策解析，状态都被消费 | 镜像下游校验、带原文兜底的猜测解析、只写不读字段 | 解析/校验出的值驱动了哪个分支？删掉会出什么具体事故？ |
-| **对称性** | 同样的事只用一种方式表达 | 互斥分支重复贴前置调用、同类逻辑两套写法、运行时 `assert` 糊弄类型 | 同一个前置操作能否无副作用地合并为一处？ |
+#### 1. 层级纯度：一个函数只在一个抽象高度说话
+- **反例形状**：高层编排函数里突然混入底层细节或局部导入（如在 `_dispatch` 的 `Harness.load()` 之间手拼 dict、函数中间 `from .contracts import ToolCall`）。
+- **维护代价**：读者必须在“流程编排”和“字段拼装”两个思维高度之间反复切换；后续修改容易在错误的层级插入日志或清理逻辑。
+- **合理例外**：小型适配器的一行返回字面量（如 `return {"ok": True, "data": res}`）。
+- **Anti-fix（错误修法）**：为消除提示把 `return {"ok": True}` 拆成两行“饺子皮函数”。
 
-### 0.3 三层漏斗
+#### 2. 控制流平直度：主路一条直线，分支只做真实决策
+- **反例形状**：箭头形深层嵌套；用长 `if/elif` 模拟查表；`argparse` 已解析命令又按字符串二次路由；用复合 key 查表后再二次解码。
+- **维护代价**：读者需要在脑中维护多层上下文栈，或逆向 key 的构造与优先级才能还原真实行为。
+- **合理例外**：扁平 `match/switch`、连续的 guard clauses、协议状态机的直接枚举分派。
+- **Anti-fix**：把显式条件编码成 `f"{cmd}:{retry}:{empty}"` 字符串 key 塞进表里，或把连续逻辑切成互相传 `ctx` 的碎片函数。
 
-- **L0 卫生层（外部工具）**：`ruff` / `mypy` / `clippy` / `tsc` / formatter 负责语法、格式、重复导入、未使用变量和 `assert`。Bits 不重复实现。
-- **L1 拓扑层（`bits` AST）**：只抓不依赖变量名、不猜业务语义的结构事实，负责硬门禁与圈定嫌疑函数（`BCS001`–`BCS016` 的确定性子集）。
-- **L2 品味层（Bits Skill + 独立 Critic）**：只聚焦**本次 Diff 中改动较大/新增分支的函数**与 **L1 报出 Warning 的函数**，用四个维度追问；无问题保持沉默，不输出表扬与空话。
+#### 3. 信息增益：只为本层决策解析，状态都被消费
+- **反例形状**：透传层镜像下游参数校验（`validate_parameters`）；猜三种下游错误 JSON 重新拼文案（`parameter_error`）；定义了只写不读的投机字段。
+- **维护代价**：复制了别人拥有的知识，下游一变本层就过期；解析失败反正回退原文，说明解析并不驱动任何行为。
+- **合理例外**：本层确实用该值做分支（如 `retryable` 决定重试）、安全脱敏、资源截断（如 64KiB）、保护自身不变量（如保留键）。
+- **Anti-fix**：用 `bits:prove: cohesive logic` 之类的空话为镜像校验辩护，或把猜测逻辑搬进另一个 helper。
 
-### 0.4 新规则准入（Eval-Driven）
+#### 4. 对称性与契约气闸：同样的事一种写法，断言只证内部不变量
+- **反例形状**：互斥分支头部重复贴同一个前置调用；同类逻辑一半平铺一半嵌套；用 `assert request.token` 拦截外部输入错误，或在 `assert (x := read())` 里藏副作用。
+- **维护代价**：重复副本容易只改一边导致漂移；可裁剪断言在优化构建（`-O`/`NDEBUG`）下直接改变程序行为。
+- **合理例外**：内部不变量断言（`assert cursor <= len(buf)`）；外部框架强制的固定签名。
+- **Anti-fix**：为满足断言数量要求添加 `assert True` 或重复下游校验。
+
+### 0.3 三层漏斗与分级纪律（对齐 Clippy / Staticcheck）
+
+| 层级 | 对应业界分级 | 职责与默认策略 |
+|---|---|---|
+| **L0 卫生层** | Formatter / Pyflakes / Clippy `style` | 官方工具负责语法、格式、重复导入、未使用变量、语言特有坑（如 Ruff `B006` 可变默认参数）。**只诊断，禁止自动改写语义。** |
+| **L1 拓扑层（硬错误）** | Clippy `correctness` | `severity=violation, confidence=high`：零误报的确定性结构矛盾（如嵌套 >3、断言显式副作用、`bits:spec(pure)` 触 IO）。**不能靠 `bits:prove` 豁免。** |
+| **L1 拓扑层（Warning）** | Clippy `suspicious` / `complexity` | `severity=warning`：确定的结构坏味道（如 `BCS016` 同体分支、可折叠 `if`），用于圈定 L2 热区；**不阻断 CI，不要求补注释。** |
+| **L2 品味层** | Clippy `pedantic` + Ousterhout | 主观但有高价值的品味审查，由独立 Critic 只聚焦 Diff 改动函数与 L1 Warning 热区，无问题保持沉默。 |
+| **Restriction / Opt-in** | Clippy `restriction` | `bits:spec(pure)`、`bits.toml` 的 `io_sources`、Go Profile 等按项目政策显式开启，绝不整组强推。 |
+
+**L0/L1 去重契约**：跨语言结构规则（可折叠 `if`、同体分支、冗余 `else`、无效重抛、布尔陷阱）**统一由 Bits L1 拥有**；各语言 L0 配置模板（如 `profiles/python-ruff.toml`）不得重复开启对应规则，避免同一行代码双重告警。
+
+### 0.4 新规则准入与退出（Eval-Driven）
 
 任何新 L1 规则上线前必须同时通过：
 1. **正样本召回**：`corpus/bad/` 中真实反面案例 `before` 命中、`after` 消除。
-2. **开源盲测**：在锁定 commit 的 `click` / `httpx` / `rich` 等基准库上，硬错误 **0 误报**，Warning 误报率 **< 1%**（`bits bench`）。
-3. **Agent 对抗测试**：Agent 修复后代码更接近 `after`，而非拆碎函数或编造 `bits:prove`。
+2. **开源盲测**：在锁定 commit 的基准库上，硬错误 **0 误报**，Warning 误报函数占比 **< 1%**（`bits bench` 按 `functions_with_warnings / functions_checked` 统计）。新复杂度指标先看 **P50/P90/P95/P99 分布**再定阈值，不拍脑袋设硬门禁。
+3. **Agent 对抗测试**：Agent 修复后代码更接近 `after`，而非拆碎函数、编造 `bits:prove` 或改写成晦涩查表。
+4. **退出机制（Staticcheck 纪律）**：实测出现真实误报的规则，必须收窄、降级或退出默认集；扫描器的误报修扫描器，不靠让用户打 `bits:allow` 消化。
 
 ## 1. 规则类型与适用范围
 
@@ -74,18 +98,9 @@
 - 局部变量不超过 10 个；`int a, b;` 计两个，参数不计，只产生 warning。
 - 圈复杂度不超过 10，属于确定的 violation。扁平 `switch/match` 的 `case` 不增加圈复杂度，但分支内的其他判断仍然计数。
 
-行数和局部变量数超过阈值产生 `warning`，不直接阻断 CI。真实嵌套和圈复杂度超过阈值仍属于 violation。优先按阶段拆分新增或正在修改的函数，不按行数机械切段，也不为了达标拆散内聚逻辑。
+- **认知复杂度 `cognitive_v1`（Sonar 白皮书口径，观测中）**：普通 `if`/循环/`catch`/三元/整个 `match/switch` 记 `1 + 当前嵌套`；`elif`/`else if`/`else` 只记 `+1`；逻辑运算按连续序列计分，`goto`/直接自递归/`match guard` 各记 `+1`。当前 `> 15` 输出高置信 `warning`（shadow 观测），硬阈值待跨语言基准 P95/P99 分布校准后再定。`else if` 与 Python `elif` 已统一嵌套深度。
 
-确实必须保持内聚时，在函数前添加解释，说明具体机制、必须一起维护的共享约束，以及拆分会破坏的不变量：
-
-```text
-bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具体拆分风险>
-```
-
-报告中的 `explanation` 字段保存该说明；文本报告在缺少说明时给出补充提示。`bits:explain` 只用于行数和局部变量 warning 的最后手段说明，**不能豁免嵌套或圈复杂度硬错误**，也不能替代本可进行的重构：
-
-- 禁止空泛套话（如 `single table`、`too complex to split`、`split scatters rules`），必须写出具体的状态、资源或顺序约束。
-- 如果分支链实际可以用声明式 Schema、数据表或删除下游镜像校验消除，应直接重构或删除，不使用解释注释保留。纯数据表和声明式配置可使用 `bits:allow(BCS003): 理由` 豁免。
+行数和局部变量数超过阈值产生 `warning`，不直接阻断 CI。真实嵌套和圈复杂度超过阈值仍属于 violation。优先删除冗余层或按职责拆分，不按行数机械切段，也不为了达标拆散内聚逻辑；确需保留时使用第 4.2 节的 `bits:prove`。
 
 ### BCS004　函数接口 `[AUTO-CORE]`
 
@@ -101,6 +116,7 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - `return/throw` 之后不得保留无意义的 `else`。
 - C++、Rust 及其他以 RAII、defer、with 管理资源的语言禁止 `goto`。
 - C 中 `goto` 只能向前跳转，标签必须匹配 `out_*` 或 `err_*`，禁止 `err1/err2`。
+- **可折叠双层 `if`**：外层 `if` 无 `elif/else`（非 `else if`、非条件声明/初始化语法），且执行体只有一条同样无 `elif/else` 的内层 `if` 时，报 `warning`（`category = control-flow`），提示合并为短路条件；不自动改写。
 - 是否应通过查表替代分支 `[REVIEW]`。
 
 ### BCS006　语句与表达式 `[AUTO-CORE]`
@@ -111,6 +127,7 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 禁止使用逗号表达式代替大括号。
 - 禁止嵌套三元表达式和双重否定条件。
 - 混合不同优先级的运算符时必须加括号。
+- **断言条件禁止显式副作用（硬错误）**：Python `assert` 或 C/JS `assert(...)` 的条件子树中禁止出现 `:=`、赋值 `=`、`+=`、`++/--` 等语法级变异（`-O`/`NDEBUG` 裁剪会改变程序行为）；普通谓词调用如 `assert len(x) > 0`、`assert is_valid(x)` 不报警。
 - 是否构成难以理解的高密度表达式 `[REVIEW]`。
 
 ### BCS007　大括号 `[AUTO-PROFILE]`
@@ -168,13 +185,14 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 必须忽略清理路径错误时，使用 Profile 规定的显式丢弃写法，禁止空 `catch/except`。
 - catch-all 只能继续抛出，或在系统边界转换为明确的错误类型；无法静态确认边界的转换只产生低置信 `warning`。
 - 非 void、非单元返回值必须检查或显式丢弃 `[AUTO-PROFILE]`。
-- 是否构成“伪造的成功结果”的复杂业务语义 `[REVIEW]`。
+- **无效果异常包装（warning）**：`try` 的所有 handler 仅含裸 `raise`/`throw;` 且无 `else/finally` 时，提示删除整个 `try`；handler 唯一语句为 `raise caught_var` / `throw caught_var;` 时，提示改为裸重抛或删除 handler（C++ 按值 `throw e` 还会导致切片）。
+- `try` 块是否最小化、异常转换是否保留 `cause/from err` `[REVIEW]`。
 
 ### BCS014　依赖与无用代码 `[AUTO-CORE]`
 
 - 模块运行时依赖必须无环；`TYPE_CHECKING` / `import type` 仅类型边不进入运行时环图，自环边忽略。Python 绝对导入按 `__init__.py` 包根解析，不将标准库同名模块误判为包内模块。
 - 禁止未使用的导入、依赖、变量、函数和不可达代码；Python 类型注解与类型别名中的字符串前向引用（如 `x: "Console"`、`Union["URL", str]`）及 `# noqa: F401` 显式导出计为真实引用，普通字符串（如 `VALUE = "os"`）不计。
-- 禁止通配符导入（`__init__.py` 中 `from .mod import *` 相对公开导出除外），禁止保留注释掉的旧实现。
+- 禁止通配符导入（Python `__init__.py` 相对公开导出、Rust `pub use ...::*` 公开再导出、Rust `#[cfg(test)]` 模块内 `use super::*` 除外），禁止保留注释掉的旧实现。
 - 接口或回调的未使用参数必须使用 Profile 规定的 `_`、`_name` 或 `[[maybe_unused]]` 等显式标记。
 
 ### BCS015　注释与源码元数据 `[AUTO-CORE]`
@@ -185,12 +203,15 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 注释应解释原因、约束和例外，不复述代码 `[REVIEW]`。
 - 未命中任何告警的 `bits:allow` / `bits:prove` 属于过期墓碑注释，必须删除（硬错误）。
 - `bits:prove` 不能豁免硬错误，且在 `--diff` 模式下每次变更最多新增 1 条（硬错误）。
+- `bits:prove(..., test=X)` 中的 `X` 必须唯一解析到扫描范围（含 diff 只读测试上下文）中的真实测试定义，否则报硬错误。
+- `--diff` 模式下禁止新增 legacy `bits:explain`（硬错误）。
 
-### BCS016　互斥分支头部公共前置重复 `[AUTO-CORE]`
+### BCS016　分支对称性与重复形状 `[AUTO-CORE]`
 
 - 带兜底 `else` 的穷尽 `if/elif/else` 链，且所有分支条件无副作用时，若每个分支的首条语句都是完全相同的独立调用（如 `await harness.check()`），产生 `warning`（`category = symmetry`，`obligation = prove_minimalism`）。
 - 将该调用提升到分支之前语义等价；若各分支实际在做命令路由，优先改为注册表或 `set_defaults(handler=...)` 直接绑定处理函数。
 - 无 `else` 的非穷尽分支、含副作用条件（如条件中调用函数）或首条调用不一致时不报警。
+- **相邻同体分支**：相邻 `if/elif` 分支的归一化 AST 执行体完全相同时，报 `warning`（`category = symmetry`），提示用 `or`/`||` 合并条件；跨 `else` 不重排，含 `typeof`/`isinstance`/`:=` 等类型收窄或绑定条件时跳过。
 
 ### BCS017　纯度契约与污点传播 `[AUTO-CORE]`
 
@@ -198,17 +219,27 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 内置常见 IO 调用与模块（`open`、`print`、`fetch`、`os.*`、`subprocess.*`、`httpx.*`、`std::fs::*`、`*.read_text` 等，含 `import os as o` 别名与 `from os import getenv` 绑定）；项目可在 `bits.toml` 用 `io_sources = ["Client.request", "db.*"]` 追加 glob 源头。
 - 宁漏勿错：不自动推断 `pure`；跨文件只沿真实 import 绑定传播；无法静态确认接收者类型的方法调用（如 `client.get()`）默认不误报，需通过 `io_sources` 显式声明。
 
-## 3. 抽象约束 `[REVIEW]`
+## 3. 抽象与边界约束 `[REVIEW]`（三段式）
 
-- 优先直接调用。重复模式稳定后再抽象，通常第三次重复才值得认真考虑。
-- 只有一个实现的接口不一定是问题：外部系统边界、插件、ABI 和测试替身可以例外；没有边界目的时应删除。
-- 禁止没有新增语义、错误处理、资源管理或组合价值的纯转发包装层。
-- 继承深度默认不超过 2；组合优先于继承。
-- 数据结构、默认值和类型约束能否消除特殊分支，优先于继续添加判断。
-- 透传层只校验自身拥有的事实和不变量（如保留字段、权限、结构边界）。下游 SDK、模型或服务已有参数契约时，不用 `if/elif` 镜像其取值范围和互斥规则；交由下游校验，并在系统边界透传或包装原始错误。
-- 确实需要在本地提前失败或归一化时，使用声明式 Schema（如 Pydantic、Zod）或查表，不用同一变量对多个字符串字面量做 `if/elif` 分派。
+### 3.1 接口税测试：新抽象必须减少调用者知识
+- **反例形状**：`def parse(req, ctx): return _parse(req, ctx.schema, ctx.seen, ctx.out)` —— 抽出的单调用 helper 签名几乎复述原函数，靠搬运 `ctx` 或 out-param 维持连续决策。
+- **维护代价**：读者要同时理解两套签名、共享状态和调用顺序，复杂性只是被转移而非被封藏。
+- **合理例外**：公共稳定 API、ABI/FFI、框架强制签名、真实多实现接缝、独立可命名的纯领域运算。**判据**：把 helper 内联回唯一调用者后，调用者具体新增了哪项知识或不变量？答不出就内联。
+- **Anti-fix**：把 helper 改名为 `impl/adapter` 或补一段复述代码的 docstring 来证明抽象价值。
 
-本节不参与自动 PASS/FAIL。
+### 3.2 契约气闸与最小 `try`：区分运行时错误与内部不变量
+- **反例形状**：`assert request.token`（把外部输入缺失当程序员 Bug）；`try` 块包裹了大段不会抛目标异常的日志/序列化逻辑；`while True:` 无限重试且没有耗尽错误。
+- **维护代价**：外部可预期失败变成含混崩溃；大 `try` 误吞无关异常；永久故障变成悬挂请求。
+- **合理例外**：测试断言；内部已证明的不变量；服务器事件循环以 EOF/取消为终点。透传层只校验自身不变量（保留键、权限、结构边界），下游参数契约交下游报错并在边界透传/包装原始错误（保留 `cause`/`source`）。
+- **Anti-fix**：为过关批量加 `from None` 隐藏根因，或机械补 `assert True`。
+
+### 3.3 单源分发与最小能力签名：不二次路由，不索取多余所有权
+- **反例形状**：`argparse` 注册了 `command="run"` 又写 `if args.command == "run"`；只读数据却索取所有权再内部 `clone()`；往 `out` 参数里塞本应返回的新集合。
+- **维护代价**：同一事实维护两份必然漂移；伪所有权强迫调用方复制；隐藏 out-param 让数据流向和失败路径难以推导。
+- **合理例外**：框架不支持绑定时用单一注册表；调用方缓冲区复用（如 `Read::read`）、真实原地修改、FFI/trait 固定签名。优先直接调用，重复到第三次且模式稳定再抽象；继承默认不超过 2 层且必须满足 is-a。
+- **Anti-fix**：为躲参数数量硬套 Builder/functional options，或为躲 `clone` 提示套一层无收益的 `Cow`/泛型。
+
+本节不参与自动 PASS/FAIL，由 L2 独立 Critic 聚焦 Diff 热区审查。
 
 ## 4. 外部豁免与稀缺举证（`bits:allow` vs `bits:prove`）
 
@@ -233,11 +264,11 @@ bits:prove(BCS016): check 内部依赖分支求值顺序；提升会改变初始
 ```
 
 - 必须用 `;` 或 `；` 分隔为**两段**：为什么这是最简形式；删掉/改简单后的具体风险。
-- 高风险边界举证必须附 `test=<test_name>`，指向验证该失效场景的测试。
+- 高风险边界举证必须附 `test=<fn_or_Class_method>`。扫描器通过 AST 索引真实测试定义（Python `def test_*` / `Test*.test_*`、TS `test()/it()`、Rust `#[test] fn`，含 diff 下未变更的测试文件）；**不存在或有歧义直接报 `BCS015` 硬错误**。
 - **不能豁免任何硬错误**；作用于 warning 时，将其标记为 `obligation = critic_review`，交由**独立 Critic Agent 或人**核验，写代码的 Agent 不能自审通过。
 - **配额**：`--diff` 模式下每次变更最多新增 **1** 条 `bits:prove`，超出直接报 `BCS015` 硬错误。
 - **过期即删**：未命中任何活跃 warning 的 `bits:prove` 直接报 `BCS015` 硬错误。
-- `bits:explain(BCS003)` 作为 V0.3 兼容字段保留，新代码统一使用 `bits:prove`。
+- **封死后门**：`bits:explain(BCS003)` 仅用于存量代码全量扫描兼容；**`--diff` 模式下新增 `bits:explain` 直接报 `BCS015` 硬错误**，必须使用 `bits:prove`。
 
 生成代码和第三方代码通过扫描配置排除，不使用豁免注释；formatter-off 区域也必须使用规则号和理由，并立即恢复。
 
@@ -248,4 +279,4 @@ bits:prove(BCS016): check 内部依赖分支求值顺序；提升会改变初始
 - 存量代码使用 baseline：不得新增违规，新文件必须全量通过。
 - 使用 `bits style report --output bits-baseline.json` 生成基线，再使用 `bits style check --baseline bits-baseline.json`。
 - baseline 只隐藏与既有规则、文件、消息和实际值完全匹配的违规；移动代码行号不会自动产生新违规。
-- **`improving` 棘轮**：在 `--diff` 模式下，若已存在函数仍超出 `BCS003` 嵌套或圈复杂度阈值，但同名函数相对基线 commit 的对应指标**严格下降**，则该条诊断标记为 `improving = true`、`obligation = ratchet_improving`，降级为 warning 不阻断增量提交。复杂度持平/上升、或新增函数不享受棘轮，仍为硬错误。
+- **`improving` 棘轮**：在 `--diff` 模式下，按 `(函数名, 同名出现序号)` 匹配基线 commit 中的已存在函数（不受行号移动影响，区分同名方法）；若仍超出 `BCS003` 嵌套、圈复杂度或认知复杂度观测阈值，但对应指标**严格下降**，则标记 `improving = true`、`obligation = ratchet_improving`，降级为 warning 不阻断增量提交。指标持平/上升、改名或新增函数不享受棘轮，仍为硬错误。

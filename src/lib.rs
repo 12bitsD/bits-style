@@ -6,4 +6,5 @@ pub mod model;
 pub mod report;
 pub mod scanner;
 pub mod taint;
+pub mod test_index;
 pub mod text;

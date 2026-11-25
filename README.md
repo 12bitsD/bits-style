@@ -63,11 +63,11 @@ Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，�
 ## Warning、举证与 Unsupported
 
 - **Warning 不要求补注释**。处理顺序固定为：删冗余层 → 换成表/Schema/handler 绑定 → 按职责拆分 → 最后才登记稀缺举证。
-- `bits:allow(RULE): 理由` 仅用于外部硬契约；`bits:prove(RULE[, test=name]): 最简理由；具体风险` 仅用于 warning，**每次 diff 最多新增 1 条**，不能豁免硬错误，且必须由独立 Critic/人核验。未命中告警的 `allow`/`prove` 直接报 `BCS015` 硬错误（墓碑清理）。
-- 新增 `BCS016`：穷尽互斥分支头部重复同一前置调用（如 `await harness.check()`）时提示提升或绑定 handler。
-- 新增 `BCS017` 污点传播：显式标记 `bits:spec(pure)` 的函数直接或经调用链触碰 IO（内置常见 IO 模块 + `bits.toml` 的 `io_sources`）即报硬错误。
-- **`improving` 棘轮**：`--diff` 下已存在函数的 `BCS003` 嵌套或圈复杂度相对基线严格下降时，标记 `improving = true` 并降为 warning 放行；新函数和恶化改动仍硬拦截。
-- 在锁定 commit 的 `click`/`httpx`/`rich` 上，`BCS016`/`BCS017` 均 0 误报，整体 L1 硬错误较初测下降 56%（详见 [基线报告](benchmarks/BASELINE.md)）。
+- `bits:allow(RULE): 理由` 仅用于外部硬契约；`bits:prove(RULE[, test=name]): 最简理由；具体风险` 仅用于 warning，**每次 diff 最多新增 1 条**，不能豁免硬错误，`test=name` 必须经 AST 唯一解析到真实测试，且必须由独立 Critic/人核验。未命中告警的 `allow`/`prove` 及 diff 新增的 legacy `bits:explain` 直接报 `BCS015` 硬错误。
+- **L1 结构品味**：穷尽分支头部重复前置调用与相邻同体分支（`BCS016`）、可折叠双层 `if`（`BCS005`）、无效重抛（`BCS013`）、断言显式副作用硬错误（`BCS006`）、`bits:spec(pure)` IO 污点传播（`BCS017`）。
+- **Sonar 认知复杂度 `cognitive_v1`**：在 `click`/`httpx`/`rich` 共 1,942 个函数上实测 P50=1、P95=13、P99=34；当前对 `> 15`（占 3.86%）输出 shadow warning，保留旧硬门禁兼容存量 baseline，待跨语言基准校准后再晋升。
+- **Python L0/L1 去重**：`profiles/python-ruff.toml` 仅开 `F`、`B006`、`PLR1714`、`PIE790` 且禁止自动改写；结构规则统一归 Bits L1。
+- **`improving` 棘轮**：`--diff` 下按 `(函数名, 同名序号)` 匹配基线函数，嵌套、圈复杂度或认知复杂度严格下降时标记 `improving = true` 并降为 warning 放行；新函数和恶化改动仍硬拦截。
 - React 组件自动接受 PascalCase 和展示型布尔 props；JSX 区域交给 formatter，TSX 保守提示不阻断 CI。
 - `severity = violation` 才返回 1；warning 只进入报告。`report` 展示全部结果。
 - Go 等未适配文件进入 `unsupported` 列表，`check` 返回 2；Rust 已适配的部分按 `partial` 明确报告，不再形成“未覆盖却 passed”。
@@ -179,7 +179,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-113 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
+118 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
 
 ## License
 

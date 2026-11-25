@@ -1,6 +1,6 @@
 # Bits’s Coding Style
 
-Version: v0.4.1.
+Version: v0.4.2.
 
 Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bitsD/bits-style.
 
@@ -17,7 +17,8 @@ Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bits
 - Do not perform whole-repository mechanical rewrites to reach zero violations.
 - Do not change external JSON, Pydantic, FFI, ABI or framework callback contracts to satisfy a rule.
 - Do not split cohesive logic just to satisfy a line or variable threshold. Resolve smells in order: delete redundant layers → bind data/schema/handlers → split by responsibility → scarce proof.
-- Warnings do not require comments. `bits:allow(rule): reason` is only for external hard contracts; `bits:prove(rule[, test=name]): minimal reason; concrete risk` is for warnings only, max 1 new per diff, and requires independent Critic/human approval. Unused `allow`/`prove` annotations are hard errors.
+- Warnings do not require comments. `bits:allow(rule): reason` is only for external hard contracts; `bits:prove(rule[, test=name]): minimal reason; concrete risk` is for warnings only, max 1 new per diff, requires independent Critic/human approval, and `test=name` must resolve to a unique real test definition. Unused `allow`/`prove` annotations and newly added legacy `bits:explain` in diff mode are hard errors.
+- Apply the interface-tax test before splitting: if inlining a single-call helper adds no new caller knowledge or invariant, keep it inline. Do not split cohesive logic or encode conditions into opaque lookup keys to satisfy metrics.
 - Do not mirror downstream SDK/model parameter validation in pass-through layers; validate only module-owned invariants and wrap/forward downstream errors. Bind handlers directly to parsed structures (e.g. argparse `set_defaults`) instead of re-branching on command strings.
 - Keep `bits:spec(pure)` functions free of direct or transitive IO (`BCS017`); pass external data in and register project IO entrypoints in `bits.toml` `io_sources`.
 - In diff mode, never increase nesting or cyclomatic complexity in an already-over-threshold function, and never add new over-threshold functions; reduce them so the `improving` ratchet applies.
