@@ -5,10 +5,14 @@ use serde_json::Value;
 
 pub const PROTOCOL_VERSION: &str = "bits.style.scan/v2";
 pub const STYLE_VERSION: &str = "0.4";
-pub const RULE_IDS: [&str; 16] = [
+pub const RULE_IDS: [&str; 17] = [
     "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007", "BCS008", "BCS009",
-    "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015", "BCS016",
+    "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015", "BCS016", "BCS017",
 ];
+
+fn is_false(value: &bool) -> bool {
+    !*value
+}
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
 pub struct Position {
@@ -56,6 +60,8 @@ pub struct Violation {
     pub category: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub obligation: Option<String>,
+    #[serde(default, skip_serializing_if = "is_false")]
+    pub improving: bool,
 }
 
 fn default_severity() -> String {
@@ -91,6 +97,7 @@ impl Violation {
             explanation: None,
             category: None,
             obligation: None,
+            improving: false,
         }
     }
 
@@ -137,6 +144,8 @@ pub struct Summary {
     pub unsupported_files: usize,
     #[serde(default)]
     pub proves: usize,
+    #[serde(default)]
+    pub improving: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -251,6 +260,7 @@ impl Report {
             .iter()
             .filter(|v| v.obligation.as_deref() == Some("critic_review"))
             .count();
+        self.summary.improving = self.results.iter().filter(|v| v.improving).count();
         self.summary.fixable_violations = self.results.iter().filter(|v| v.fixable).count();
         self.summary.scan_errors = self.scan_errors.len();
         self.status = if !self.scan_errors.is_empty() {

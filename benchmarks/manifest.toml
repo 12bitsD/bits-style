@@ -18,3 +18,4 @@ name = "rich"
 url = "https://github.com/Textualize/rich.git"
 commit = "3a109ccdffe5b2d0e30684a304fbd388e99ce57b"
 path = "rich"
+exclude = ["**/_unicode_data/**"]

@@ -21,12 +21,13 @@
 | `BCS008` | partial | not_applicable | partial | C/C++ case 对齐 switch；JS/TS 使用一级缩进；fallthrough 采用保守检查 |
 | `BCS009` | partial | partial | TSX 为低置信 warning；其他为 partial | 运算符空白按 AST 左右节点判断；多行 closing ) 不报 padding；JSX 区域交给 formatter |
 | `BCS010` | partial | partial | partial | 命名为 warning；模块级 const 同时接受两种命名；Pydantic/JSON 字段、HTTP 回调和 React/memo 组件自动豁免 |
-| `BCS011` | partial | partial | partial | 可变全局、直接环境读取和真实参数重赋值；类型别名（含 `typing.Callable` 等带前缀形式）、模块级 `logger`、对象属性更新和普通类型注解变量不误报 |
+| `BCS011` | partial | partial | partial | 可变全局、直接环境读取和真实参数重赋值；类型别名（含 `typing.*`）、带注解大写常量、模块级 `logger`、`__main__` 入口变量、`except ImportError` 回退、对象属性更新不误报 |
 | `BCS012` | partial | not_applicable | not_applicable | C/C++ 宏、inline 和函数内条件编译；宏的全部调用方语义不完整 |
 | `BCS013` | C++ partial；C 异常语法 N/A、非 void 返回值检查未实现 | partial | partial | 空 catch 为硬错误；预期 false/null 失败结果和边界转换为 warning；复杂业务错误语义属于 REVIEW |
-| `BCS014` | partial | partial | partial | 依赖环、不可达代码为硬错误；type-only import、模板插值、`__all__` re-export 及 `__init__.py` 相对通配公开导出计为合法引用；注释旧代码为 warning |
+| `BCS014` | partial | partial | partial | 运行时依赖环、不可达代码为硬错误；`TYPE_CHECKING`/type-only import 不进运行时环图，Python 绝对导入按包根解析；字符串前向类型注解、`noqa: F401`、`__init__.py` 相对导出计为合法引用 |
 | `BCS015` | supported | supported | supported | TODO 格式、`allow`/`prove` 格式、未使用（墓碑）豁免/举证硬错误、diff `prove` 配额（≤1）、editor modeline；注释内容属于 REVIEW |
 | `BCS016` | partial | partial | partial | 带 `else` 的穷尽 `if/elif/else` 且条件无副作用时，各分支首条独立调用完全一致报 warning（`symmetry` / `prove_minimalism`）；Python `match` 暂未覆盖 |
+| `BCS017` | partial | partial | partial | `bits:spec(pure)` 函数直接或经同文件/真实 import 调用链触碰内置或 `io_sources` 配置的 IO 源报硬错误；无法静态确认接收者的方法调用默认不报 |
 
 ## 文件扩展名
 

@@ -57,7 +57,8 @@
           "confidence": { "enum": ["high", "low"] },
           "explanation": { "type": "string" },
           "category": { "enum": ["level-purity", "control-flow", "state-gain", "symmetry", "role"] },
-          "obligation": { "enum": ["refactor", "prove_minimalism", "critic_review"] }
+          "obligation": { "enum": ["refactor", "prove_minimalism", "critic_review", "ratchet_improving"] },
+          "improving": { "type": "boolean" }
         }
       }
     },
@@ -99,7 +100,8 @@
         "suppressed_violations": { "type": "integer", "minimum": 0 },
         "warnings": { "type": "integer", "minimum": 0 },
         "unsupported_files": { "type": "integer", "minimum": 0 },
-        "proves": { "type": "integer", "minimum": 0 }
+        "proves": { "type": "integer", "minimum": 0 },
+        "improving": { "type": "integer", "minimum": 0 }
       }
     },
     "fixes": { "type": "array" },
@@ -109,7 +111,7 @@
     }
   },
   "$defs": {
-    "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-6])$", "type": "string" },
+    "ruleId": { "pattern": "^BCS0(0[1-9]|1[0-7])$", "type": "string" },
     "ruleList": {
       "type": "array",
       "items": { "$ref": "#/$defs/ruleId" },

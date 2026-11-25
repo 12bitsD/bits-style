@@ -6,7 +6,7 @@ BASE_REVISION="${2:-origin/main}"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v bits >/dev/null 2>&1; then
-  echo "bits is required. Install it with: cargo install --git https://github.com/12bitsD/bits-style --tag v0.4.0 --locked" >&2
+  echo "bits is required. Install it with: cargo install --git https://github.com/12bitsD/bits-style --tag v0.4.1 --locked" >&2
   exit 2
 fi
 

@@ -344,10 +344,10 @@ fn annotation_regexes() -> (&'static Regex, &'static Regex) {
     static SUPPRESSION: OnceLock<Regex> = OnceLock::new();
     static PROOF: OnceLock<Regex> = OnceLock::new();
     let suppression = SUPPRESSION
-        .get_or_init(|| Regex::new(r"bits:allow\((BCS0(?:0[1-9]|1[0-6]))\):\s*(\S.*)").unwrap());
+        .get_or_init(|| Regex::new(r"bits:allow\((BCS0(?:0[1-9]|1[0-7]))\):\s*(\S.*)").unwrap());
     let proof = PROOF.get_or_init(|| {
         Regex::new(concat!(
-            r"bits:prove\((BCS0(?:0[1-9]|1[0-6]))",
+            r"bits:prove\((BCS0(?:0[1-9]|1[0-7]))",
             r"(?:,\s*test=([A-Za-z_]\w*(?:::\w+|\.\w+)*))?\):\s*",
             r"([^;；\r\n]+)[;；]\s*(\S[^\r\n]*)"
         ))

@@ -1,6 +1,6 @@
 # Bits’s Coding Style
 
-Version: v0.4.0.
+Version: v0.4.1.
 
 Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bitsD/bits-style.
 
@@ -19,6 +19,8 @@ Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bits
 - Do not split cohesive logic just to satisfy a line or variable threshold. Resolve smells in order: delete redundant layers → bind data/schema/handlers → split by responsibility → scarce proof.
 - Warnings do not require comments. `bits:allow(rule): reason` is only for external hard contracts; `bits:prove(rule[, test=name]): minimal reason; concrete risk` is for warnings only, max 1 new per diff, and requires independent Critic/human approval. Unused `allow`/`prove` annotations are hard errors.
 - Do not mirror downstream SDK/model parameter validation in pass-through layers; validate only module-owned invariants and wrap/forward downstream errors. Bind handlers directly to parsed structures (e.g. argparse `set_defaults`) instead of re-branching on command strings.
+- Keep `bits:spec(pure)` functions free of direct or transitive IO (`BCS017`); pass external data in and register project IO entrypoints in `bits.toml` `io_sources`.
+- In diff mode, never increase nesting or cyclomatic complexity in an already-over-threshold function, and never add new over-threshold functions; reduce them so the `improving` ratchet applies.
 - For L2 taste review, inspect only changed/branchy diff functions and L1 warning sites using level purity, control-flow flatness, information gain, and symmetry. Stay silent when there is no concrete issue.
 - `unsupported` is not passed. `warning` is not a hard failure. Compile errors, formatter errors and real test failures remain hard failures.
 - A task is complete only when the same scanner reports no new high-confidence violation, all project checks pass, and remaining warnings/unsupported items are reported honestly.

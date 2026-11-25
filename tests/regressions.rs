@@ -665,6 +665,194 @@ fn python_qualified_type_aliases_and_module_logger_are_not_mutable_globals() {
     assert_no_rule(&scan("py", source), "BCS011");
 }
 
+#[test]
+fn python_stdlib_shadow_and_type_checking_imports_do_not_create_cycles() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path().join("pkg");
+    fs::create_dir(&root).unwrap();
+    fs::write(root.join("__init__.py"), "").unwrap();
+    fs::write(
+        root.join("abc.py"),
+        "from abc import ABC\n\n\nclass Base(ABC):\n    pass\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("a.py"),
+        "from .b import B\n\n\nclass A:\n    def make(self) -> B:\n        return B()\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("b.py"),
+        "from typing import TYPE_CHECKING\n\nif TYPE_CHECKING:\n    from .a import A\n    from .abc import Base\n\n\nclass B:\n    def base(self, a: \"A\") -> \"Base\":\n        return a\n",
+    )
+    .unwrap();
+    let results = scan(
+        "py",
+        "from typing import TYPE_CHECKING\nif TYPE_CHECKING:\n    from .console import Console\n\n\ndef show(c: \"Console\") -> None:\n    pass\n",
+    );
+    assert_no_rule(&results, "BCS014");
+    let report = scan_dir(root.parent().unwrap());
+    assert_no_rule(report["results"].as_array().unwrap(), "BCS014");
+}
+
+#[test]
+fn python_main_guard_typed_constants_and_optional_import_are_not_globals() {
+    let source = "from typing import Literal\n\nUNSET: Literal[0] = 0\ntry:\n    import brotli\nexcept ImportError:\n    brotli = None\n\nif __name__ == \"__main__\":\n    console = object()\n    print(console)\n";
+    assert_no_rule(&scan("py", source), "BCS011");
+}
+
+#[test]
+fn bcs017_detects_direct_indirect_cross_file_and_custom_io_taint() {
+    let direct =
+        "# bits:spec(pure)\ndef size(path: str) -> int:\n    return len(open(path).read())\n";
+    let results = scan("py", direct);
+    assert!(results.iter().any(|r| {
+        r["rule_id"] == "BCS017"
+            && r["severity"] == "violation"
+            && r["category"] == "role"
+            && r["confidence"] == "high"
+    }));
+
+    let indirect = "def helper(path: str) -> str:\n    return open(path).read()\n\n\n# bits:spec(pure)\ndef compute(path: str) -> int:\n    return len(helper(path))\n";
+    assert!(
+        scan("py", indirect)
+            .iter()
+            .any(|r| r["rule_id"] == "BCS017" && r["range"]["start"]["line"] == 6)
+    );
+
+    let alias = "import os as o\n\n\n# bits:spec(pure)\ndef home() -> str:\n    return o.getenv(\"HOME\")\n";
+    assert!(scan("py", alias).iter().any(|r| r["rule_id"] == "BCS017"));
+
+    let safe = "def helper(data: dict) -> int:\n    return data.get(\"k\", 0)\n\n\n# bits:spec(pure)\ndef compute(data: dict) -> int:\n    return helper(data) + 1\n\n\ndef unmarked(path: str) -> str:\n    return open(path).read()\n";
+    assert_no_rule(&scan("py", safe), "BCS017");
+
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    fs::write(
+        root.join("util.py"),
+        "def read_cfg(path: str) -> str:\n    return open(path).read()\n",
+    )
+    .unwrap();
+    fs::write(
+        root.join("calc.py"),
+        "from util import read_cfg\n\n\n# bits:spec(pure)\ndef calc(path: str) -> int:\n    return len(read_cfg(path))\n",
+    )
+    .unwrap();
+    let report = scan_dir(root);
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS017" && r["file"] == "calc.py" })
+    );
+
+    fs::write(root.join("bits.toml"), "io_sources = [\"db.query\"]\n").unwrap();
+    fs::write(
+        root.join("calc.py"),
+        "# bits:spec(pure)\ndef calc(db: object) -> int:\n    return db.query()\n",
+    )
+    .unwrap();
+    let report = scan_dir(root);
+    assert!(
+        report["results"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|r| { r["rule_id"] == "BCS017" && r["actual"] == "db.query" })
+    );
+}
+
+#[test]
+fn improving_ratchet_rewards_reduction_but_blocks_regressions_and_new_functions() {
+    let directory = tempfile::tempdir().unwrap();
+    let root = directory.path();
+    let file = root.join("legacy.py");
+    let nested_fn = |worse: bool| {
+        let loop_line = if worse {
+            "                while item > 0:\n                    if item == 3:\n                        item += 1\n                    item -= 1\n"
+        } else {
+            "                if item == 3:\n                    item += 3\n"
+        };
+        format!(
+            "def legacy(value: int) -> int:\n    if value > 0:\n        for item in range(value):\n            if item % 2 == 0:\n{loop_line}    if value == 1:\n        value += 1\n    if value == 2:\n        value += 1\n    if value == 3:\n        value += 1\n    if value == 4:\n        value += 1\n    if value == 5:\n        value += 1\n    if value == 6:\n        value += 1\n    if value == 7:\n        value += 1\n    if value == 8:\n        value += 1\n    if value == 9:\n        value += 1\n    return value\n"
+        )
+    };
+    fs::write(&file, nested_fn(true)).unwrap();
+    init_diff_repo(root);
+
+    // Reduce nesting from 5 to 4 and remove one branch: still over threshold, but improving.
+    fs::write(&file, nested_fn(false)).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    let report = json(&output);
+    assert_eq!(output.status.code(), Some(0), "{report:#}");
+    assert!(report["summary"]["improving"].as_u64().unwrap() >= 1);
+    assert!(report["results"].as_array().unwrap().iter().any(|r| {
+        r["rule_id"] == "BCS003"
+            && r["improving"] == true
+            && r["severity"] == "warning"
+            && r["obligation"] == "ratchet_improving"
+    }));
+
+    // Add a new deeply nested function: new functions get no ratchet.
+    let added = format!(
+        "{}\n{}",
+        nested_fn(false),
+        nested_fn(false).replace("def legacy(", "def brand_new(")
+    );
+    fs::write(&file, added).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+
+    // Worsen complexity beyond HEAD: ratchet must not apply.
+    let worsened = nested_fn(true).replace(
+        "    return value\n",
+        "    if value == 10:\n        value += 10\n    return value\n",
+    );
+    fs::write(&file, worsened).unwrap();
+    let output = bits(&[
+        "style",
+        "check",
+        root.to_str().unwrap(),
+        "--diff",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(output.status.code(), Some(1));
+}
+
+fn scan_dir(root: &Path) -> Value {
+    let mut args = vec![
+        "style",
+        "report",
+        root.to_str().unwrap(),
+        "--format",
+        "json",
+    ];
+    let config = root.join("bits.toml");
+    if config.is_file() {
+        args.push("--config");
+        args.push(config.to_str().unwrap());
+    }
+    let output = bits(&args);
+    assert_eq!(output.status.code(), Some(0));
+    json(&output)
+}
+
 fn init_diff_repo(root: &Path) {
     run_git(root, &["init", "-q"]);
     run_git(root, &["config", "user.email", "bits@example.invalid"]);

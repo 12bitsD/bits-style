@@ -29,6 +29,7 @@ pub struct SyntaxAnalysis {
     pub type_ranges: Vec<Range<usize>>,
     pub interpolations: Vec<Range<usize>>,
     pub imports: Vec<ImportRecord>,
+    pub annotation_strings: Vec<Range<usize>>,
     pub executed: BTreeSet<String>,
     pub partial: BTreeSet<String>,
     pub not_applicable: BTreeSet<String>,
@@ -60,6 +61,29 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         }
         if matches!(kind, "interpolation" | "template_substitution") {
             result.interpolations.push(node.byte_range());
+        }
+        if language == Language::Python
+            && (kind == "type" || (kind == "assignment" && is_type_alias(language, source, node)))
+        {
+            visit(node, &mut |child| {
+                if child.kind() == "string" {
+                    result.annotation_strings.push(child.byte_range());
+                }
+            });
+        }
+        if language == Language::Python
+            && kind == "call"
+            && node
+                .child_by_field_name("function")
+                .is_some_and(|function| {
+                    matches!(node_text(source, function), "cast" | "typing.cast")
+                })
+        {
+            visit(node, &mut |child| {
+                if child.kind() == "string" {
+                    result.annotation_strings.push(child.byte_range());
+                }
+            });
         }
     });
     result.executed.extend(
@@ -289,6 +313,41 @@ pub fn analyze(language: Language, relative: &str, source: &str, tree: &Tree) ->
         }
     }
     result
+}
+
+#[derive(Debug, Clone)]
+pub struct FunctionShape {
+    pub name: String,
+    pub start_line: usize,
+    pub end_line: usize,
+    pub nesting: usize,
+    pub complexity: usize,
+}
+
+pub fn function_shapes(language: Language, source: &str, tree: &Tree) -> Vec<FunctionShape> {
+    let _ = language;
+    let mut shapes = Vec::new();
+    visit(tree.root_node(), &mut |node| {
+        if !is_function(node.kind()) {
+            return;
+        }
+        let Some(name_node) = function_name(node) else {
+            return;
+        };
+        let name = node_text(source, name_node).trim();
+        if name.is_empty() || name.contains([' ', '(', ')', '=']) {
+            return;
+        }
+        let (nesting, complexity) = function_metrics(node);
+        shapes.push(FunctionShape {
+            name: name.to_owned(),
+            start_line: node.start_position().row + 1,
+            end_line: node.end_position().row + 1,
+            nesting,
+            complexity,
+        });
+    });
+    shapes
 }
 
 pub fn analyze_imports(language: Language, source: &str, tree: &Tree) -> Vec<ImportRecord> {
@@ -608,7 +667,7 @@ fn analyze_parameter_mutability(
     });
 }
 
-fn function_metrics(function: Node) -> (usize, usize) {
+pub(crate) fn function_metrics(function: Node) -> (usize, usize) {
     fn recurse(
         node: Node,
         root: Node,
@@ -1411,6 +1470,69 @@ fn analyze_inline(root: Node, relative: &str, source: &str, violations: &mut Vec
     });
 }
 
+fn in_type_checking_block(source: &str, node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "if_statement"
+            && let Some(condition) = parent.child_by_field_name("condition")
+        {
+            let text = node_text(source, condition).trim();
+            if text == "TYPE_CHECKING" || text.ends_with(".TYPE_CHECKING") {
+                return true;
+            }
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn python_forward_annotation_ref(source: &str, strings: &[Range<usize>], name: &str) -> bool {
+    strings.iter().any(|range| {
+        source
+            .get(range.clone())
+            .is_some_and(|literal| contains_word(literal, name))
+    })
+}
+
+fn in_python_main_guard(source: &str, node: Node) -> bool {
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "if_statement"
+            && let Some(condition) = parent.child_by_field_name("condition")
+        {
+            let text = node_text(source, condition);
+            if text.contains("__name__") && text.contains("__main__") {
+                return true;
+            }
+        }
+        if matches!(parent.kind(), "function_definition" | "class_definition") {
+            return false;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
+fn is_optional_import_fallback(source: &str, node: Node, value: &str) -> bool {
+    if value != "None" {
+        return false;
+    }
+    let mut current = node.parent();
+    while let Some(parent) = current {
+        if parent.kind() == "except_clause" {
+            let text = node_text(source, parent);
+            return text.starts_with("except ImportError")
+                || text.starts_with("except ModuleNotFoundError")
+                || (text.starts_with("except (") && text.contains("ImportError"));
+        }
+        if parent.kind() == "try_statement" || parent.kind() == "function_definition" {
+            return false;
+        }
+        current = parent.parent();
+    }
+    false
+}
+
 fn analyze_import(
     language: Language,
     relative: &str,
@@ -1435,7 +1557,9 @@ fn analyze_import(
     } else {
         BTreeSet::new()
     };
+    let type_checking_block = language == Language::Python && in_type_checking_block(source, node);
     let mut record = |specifier: String, binding: Option<String>, type_only: bool| {
+        let type_only = type_only || type_checking_block;
         let init_reexport = language == Language::Python
             && relative.ends_with("__init__.py")
             && text.trim_start().starts_with("from .");
@@ -1453,12 +1577,17 @@ fn analyze_import(
                 "explicit_imports",
             );
         }
+        let noqa_reexport = language == Language::Python
+            && (text.contains("noqa: F401") || text.contains("noqa:F401"));
         if diagnostics
             && let Some(name) = binding.as_deref()
             && name != "*"
+            && !noqa_reexport
             && !reexports.contains(name)
             && !is_likely_trait_name(name)
             && count_identifier(&masked, name) <= 1
+            && !(language == Language::Python
+                && python_forward_annotation_ref(source, &result.annotation_strings, name))
         {
             push(
                 &mut result.violations,
@@ -1528,8 +1657,10 @@ fn analyze_import(
             } else {
                 let imports = text.trim_start_matches("import ");
                 for name in imports.split(',') {
+                    let name = name.trim();
+                    let module = name.split(" as ").next().unwrap_or(name).trim();
                     let binding = name.split(" as ").last().unwrap_or(name).trim();
-                    record(name.trim().to_owned(), Some(binding.to_owned()), false);
+                    record(module.to_owned(), Some(binding.to_owned()), false);
                 }
             }
         }
@@ -1733,10 +1864,13 @@ fn analyze_variable(
                 }
             }
             Language::Python => {
-                let name = text.split('=').next().unwrap_or("").trim();
-                let value = text
-                    .split_once('=')
-                    .map(|parts| parts.1.trim())
+                let name = node
+                    .child_by_field_name("left")
+                    .map(|left| node_text(source, left).trim())
+                    .unwrap_or("");
+                let value = node
+                    .child_by_field_name("right")
+                    .map(|right| node_text(source, right).trim())
                     .unwrap_or("");
                 let mutable_literal = value.starts_with('[')
                     || value.starts_with('{')
@@ -1745,8 +1879,12 @@ fn analyze_variable(
                         .any(|prefix| value.starts_with(prefix));
                 node.kind() == "assignment"
                     && !is_type_alias(language, source, node)
+                    && !name.is_empty()
+                    && !name.contains([',', '(', '[', '.'])
                     && !name.starts_with('_')
                     && !value.starts_with("logging.getLogger(")
+                    && !in_python_main_guard(source, node)
+                    && !is_optional_import_fallback(source, node, value)
                     && (!valid_upper_snake(name) || mutable_literal)
             }
             _ if language.is_script() => {
@@ -2180,7 +2318,7 @@ fn mask_ranges(
     String::from_utf8(bytes).unwrap_or_else(|_| source.to_owned())
 }
 
-fn is_function(kind: &str) -> bool {
+pub(crate) fn is_function(kind: &str) -> bool {
     matches!(
         kind,
         "function_definition"
@@ -2464,7 +2602,7 @@ fn is_unnamed_c_parameter(node: Node) -> bool {
     !has_declarator && node.kind() == "parameter_declaration"
 }
 
-fn function_name(function: Node) -> Option<Node> {
+pub(crate) fn function_name(function: Node) -> Option<Node> {
     if let Some(name) = function.child_by_field_name("name") {
         return Some(name);
     }
@@ -2628,7 +2766,7 @@ fn contains_word(text: &str, word: &str) -> bool {
     regex.is_match(text)
 }
 
-fn node_text<'a>(source: &'a str, node: Node) -> &'a str {
+pub(crate) fn node_text<'a>(source: &'a str, node: Node) -> &'a str {
     node.utf8_text(source.as_bytes()).unwrap_or("")
 }
 

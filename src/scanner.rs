@@ -1,13 +1,16 @@
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::Write;
 use std::path::{Component, Path, PathBuf};
+use std::process::Command;
 
 use clap::{Args, Parser, Subcommand, ValueEnum};
 use serde::Deserialize;
 
-use crate::analyze::{self, ImportRecord, SyntaxAnalysis};
+use crate::analyze::{self, FunctionShape, ImportRecord, SyntaxAnalysis};
 use crate::discovery::{self, DiscoveredFile, LineScope, Scope};
+use crate::language::Language;
 use crate::model::{FileFix, PassedCheck, RULE_IDS, Report, ScanError, Violation};
+use crate::taint::{self, FunctionFact, IoPolicy};
 use crate::{report, text};
 
 #[derive(Debug, Parser)]
@@ -89,6 +92,8 @@ fn default_jobs() -> usize {
 struct Config {
     #[serde(default)]
     exclude: Vec<String>,
+    #[serde(default)]
+    io_sources: Vec<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -107,6 +112,9 @@ struct FileScan {
     not_applicable: BTreeSet<String>,
     line_scope: LineScope,
     proves: Vec<(usize, String)>,
+    python_package: Option<(String, String)>,
+    shapes: Vec<FunctionShape>,
+    facts: Vec<FunctionFact>,
 }
 
 pub fn run(cli: Cli) -> u8 {
@@ -155,6 +163,13 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
         args.paths.clone()
     };
     let discovery = discovery::discover(&inputs, scope, args.no_ignore, &config.exclude)?;
+    let policy = IoPolicy::new(&config.io_sources)?;
+    let diff_base = args.diff.then(|| {
+        (
+            discovery.root.clone(),
+            args.commit.clone().unwrap_or_else(|| "HEAD".to_owned()),
+        )
+    });
     let files = discovery.files;
     let unsupported = discovery.unsupported;
     let dependency_context = discovery.dependency_context;
@@ -168,7 +183,8 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
             args.jobs,
             false,
             &unsupported,
-            args.diff,
+            &policy,
+            diff_base.as_ref(),
         );
         let mut fixes = apply_fixes(&files)?;
         let mut after = scan_report(
@@ -177,7 +193,8 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
             args.jobs,
             args.include_passed,
             &unsupported,
-            args.diff,
+            &policy,
+            diff_base.as_ref(),
         );
         for fix in &mut fixes {
             fix.remaining_violations = after
@@ -201,7 +218,8 @@ fn execute(action: StyleCommand, args: &ScanArgs) -> Result<u8, String> {
             args.jobs,
             args.include_passed,
             &unsupported,
-            args.diff,
+            &policy,
+            diff_base.as_ref(),
         )
     };
     if let Some(path) = &args.baseline {
@@ -304,10 +322,12 @@ fn scan_report(
     jobs: usize,
     include_passed: bool,
     unsupported: &[String],
-    diff_mode: bool,
+    policy: &IoPolicy,
+    diff_base: Option<&(PathBuf, String)>,
 ) -> Report {
-    let scans = scan_files(files, jobs);
-    let dependency_scans = scan_dependency_context(&scans, dependency_context);
+    let diff_mode = diff_base.is_some();
+    let scans = scan_files(files, jobs, policy);
+    let dependency_scans = scan_dependency_context(&scans, dependency_context, policy);
     let mut report = Report::new();
     report.summary.files_discovered = files.len();
     report.summary.files_scanned = files.len();
@@ -335,10 +355,12 @@ fn scan_report(
         report
             .coverage
             .executed
-            .extend(["BCS001", "BCS002", "BCS015"].map(str::to_owned));
+            .extend(["BCS001", "BCS002", "BCS015", "BCS017"].map(str::to_owned));
     }
     check_dependency_cycles(&scans, &dependency_scans, diff_mode, &mut report.results);
+    check_purity_contracts(&scans, &dependency_scans, &mut report.results);
     filter_diff_violations(&scans, diff_mode, &mut report.results);
+    apply_improving_ratchet(files, &scans, diff_base, &mut report.results);
     enforce_prove_budget(&scans, diff_mode, &mut report.results);
     report.finish();
 
@@ -365,16 +387,21 @@ fn scan_report(
     report
 }
 
-fn scan_files(files: &[DiscoveredFile], jobs: usize) -> Vec<FileScan> {
+fn scan_files(files: &[DiscoveredFile], jobs: usize, policy: &IoPolicy) -> Vec<FileScan> {
     if jobs <= 1 || files.len() < 2 {
-        return files.iter().map(scan_file).collect();
+        return files.iter().map(|file| scan_file(file, policy)).collect();
     }
     let chunk_size = files.len().div_ceil(jobs);
     let mut output = Vec::new();
     std::thread::scope(|scope| {
         let mut handles = Vec::new();
         for chunk in files.chunks(chunk_size) {
-            handles.push(scope.spawn(move || chunk.iter().map(scan_file).collect::<Vec<_>>()));
+            handles.push(scope.spawn(move || {
+                chunk
+                    .iter()
+                    .map(|file| scan_file(file, policy))
+                    .collect::<Vec<_>>()
+            }));
         }
         for handle in handles {
             match handle.join() {
@@ -394,7 +421,11 @@ fn scan_files(files: &[DiscoveredFile], jobs: usize) -> Vec<FileScan> {
     output
 }
 
-fn scan_dependency_context(scans: &[FileScan], files: &[DiscoveredFile]) -> Vec<FileScan> {
+fn scan_dependency_context(
+    scans: &[FileScan],
+    files: &[DiscoveredFile],
+    policy: &IoPolicy,
+) -> Vec<FileScan> {
     let context: BTreeMap<&str, &DiscoveredFile> = files
         .iter()
         .map(|file| (file.relative.as_str(), file))
@@ -411,7 +442,12 @@ fn scan_dependency_context(scans: &[FileScan], files: &[DiscoveredFile]) -> Vec<
             let Some(specifier) = analyze::dependency_path(import) else {
                 continue;
             };
-            if let Some(target) = resolve_dependency(&scan.relative, &specifier, &known) {
+            if let Some(target) = resolve_dependency(
+                &scan.relative,
+                &specifier,
+                scan.python_package.as_ref(),
+                &known,
+            ) {
                 pending.push(target.to_owned());
             }
         }
@@ -425,37 +461,55 @@ fn scan_dependency_context(scans: &[FileScan], files: &[DiscoveredFile]) -> Vec<
         let Some(file) = context.get(relative.as_str()) else {
             continue;
         };
-        let Some(imports) = scan_imports(file) else {
+        let Some((imports, facts)) = scan_context_file(file, policy) else {
             continue;
         };
+        let python_package = python_package_context(file);
         for import in &imports {
             let Some(specifier) = analyze::dependency_path(import) else {
                 continue;
             };
-            if let Some(target) = resolve_dependency(&relative, &specifier, &known) {
+            if let Some(target) =
+                resolve_dependency(&relative, &specifier, python_package.as_ref(), &known)
+            {
                 pending.push(target.to_owned());
             }
         }
         output.push(FileScan {
+            python_package,
             relative,
             imports,
+            facts,
             ..FileScan::default()
         });
     }
     output
 }
 
-fn scan_imports(file: &DiscoveredFile) -> Option<Vec<ImportRecord>> {
+fn scan_context_file(
+    file: &DiscoveredFile,
+    policy: &IoPolicy,
+) -> Option<(Vec<ImportRecord>, Vec<FunctionFact>)> {
     let source = std::fs::read_to_string(&file.absolute).ok()?;
     let tree = file.language.parse(&source).ok()?;
     if tree.root_node().has_error() {
         return None;
     }
-    Some(analyze::analyze_imports(file.language, &source, &tree))
+    let imports = analyze::analyze_imports(file.language, &source, &tree);
+    let facts = taint::extract_facts(
+        file.language,
+        &file.relative,
+        &source,
+        &tree,
+        &imports,
+        policy,
+    );
+    Some((imports, facts))
 }
 
-fn scan_file(file: &DiscoveredFile) -> FileScan {
+fn scan_file(file: &DiscoveredFile, policy: &IoPolicy) -> FileScan {
     let mut scan = FileScan {
+        python_package: python_package_context(file),
         relative: file.relative.clone(),
         line_scope: file.line_scope.clone(),
         ..FileScan::default()
@@ -504,8 +558,17 @@ fn scan_file(file: &DiscoveredFile) -> FileScan {
         &analysis.strings,
         &analysis.comments,
     ));
+    scan.shapes = analyze::function_shapes(file.language, &source, &tree);
     let comments = analysis.comments.clone();
     merge_analysis(&mut scan, analysis);
+    scan.facts = taint::extract_facts(
+        file.language,
+        &file.relative,
+        &source,
+        &tree,
+        &scan.imports,
+        policy,
+    );
     scan.proves =
         text::apply_inline_suppressions(&file.relative, &source, &comments, &mut scan.violations);
     scan
@@ -513,14 +576,146 @@ fn scan_file(file: &DiscoveredFile) -> FileScan {
 
 pub fn scan_path_for_bench(path: &Path, exclude: &[String]) -> Result<Report, String> {
     let discovery = discovery::discover(&[path.to_path_buf()], Scope::All, false, exclude)?;
+    let policy = IoPolicy::new(&[])?;
     Ok(scan_report(
         &discovery.files,
         &[],
         default_jobs(),
         false,
         &discovery.unsupported,
-        false,
+        &policy,
+        None,
     ))
+}
+
+fn check_purity_contracts(
+    scans: &[FileScan],
+    context: &[FileScan],
+    violations: &mut Vec<Violation>,
+) {
+    let all: Vec<&FileScan> = scans.iter().chain(context.iter()).collect();
+    let known: BTreeSet<&str> = all.iter().map(|scan| scan.relative.as_str()).collect();
+    let by_file: BTreeMap<&str, &FileScan> = all
+        .iter()
+        .map(|scan| (scan.relative.as_str(), *scan))
+        .collect();
+    let resolve_import = |file: &str, symbol: &str| -> Option<(String, String)> {
+        let scan = by_file.get(file)?;
+        for import in &scan.imports {
+            if import.binding.as_deref() != Some(symbol) {
+                continue;
+            }
+            let specifier = analyze::dependency_path(import)?;
+            let target =
+                resolve_dependency(file, &specifier, scan.python_package.as_ref(), &known)?;
+            return Some((target.to_owned(), symbol.to_owned()));
+        }
+        None
+    };
+    let facts: Vec<FunctionFact> = all
+        .iter()
+        .flat_map(|scan| scan.facts.iter().cloned())
+        .collect();
+    violations.extend(taint::check_purity(&facts, &resolve_import));
+}
+
+fn apply_improving_ratchet(
+    files: &[DiscoveredFile],
+    scans: &[FileScan],
+    diff_base: Option<&(PathBuf, String)>,
+    violations: &mut [Violation],
+) {
+    let Some((root, base)) = diff_base else {
+        return;
+    };
+    let languages: BTreeMap<&str, Language> = files
+        .iter()
+        .map(|file| (file.relative.as_str(), file.language))
+        .collect();
+    let by_file: BTreeMap<&str, &FileScan> = scans
+        .iter()
+        .map(|scan| (scan.relative.as_str(), scan))
+        .collect();
+    let mut cache: BTreeMap<String, Option<BTreeMap<String, FunctionShape>>> = BTreeMap::new();
+    for violation in violations.iter_mut() {
+        let Some(&language) = languages.get(violation.file.as_str()) else {
+            continue;
+        };
+        let Some(scan) = by_file.get(violation.file.as_str()) else {
+            continue;
+        };
+        let base_shapes = cache
+            .entry(violation.file.clone())
+            .or_insert_with(|| load_base_shapes(root, base, &violation.file, language));
+        let Some(base_shapes) = base_shapes else {
+            continue;
+        };
+        if ratchet_improved(violation, scan, base_shapes) {
+            violation.improving = true;
+            violation.severity = "warning".to_owned();
+            violation.obligation = Some("ratchet_improving".to_owned());
+        }
+    }
+}
+
+fn ratchet_improved(
+    violation: &Violation,
+    scan: &FileScan,
+    base_shapes: &BTreeMap<String, FunctionShape>,
+) -> bool {
+    if violation.rule_id != "BCS003" {
+        return false;
+    }
+    let line = violation.range.start.line;
+    let Some(current) = scan
+        .shapes
+        .iter()
+        .find(|shape| shape.start_line <= line && shape.end_line >= line)
+    else {
+        return false;
+    };
+    let Some(previous) = base_shapes.get(&current.name) else {
+        return false;
+    };
+    match violation.message.as_str() {
+        "control-flow nesting exceeds three levels" => current.nesting < previous.nesting,
+        "cyclomatic complexity exceeds ten" => current.complexity < previous.complexity,
+        _ => false,
+    }
+}
+
+fn load_base_shapes(
+    root: &Path,
+    base: &str,
+    relative: &str,
+    language: Language,
+) -> Option<BTreeMap<String, FunctionShape>> {
+    let output = Command::new("git")
+        .current_dir(root)
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "show",
+            "--no-ext-diff",
+            "--no-textconv",
+            &format!("{base}:./{relative}"),
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let source = String::from_utf8(output.stdout).ok()?;
+    let tree = language.parse(&source).ok()?;
+    if tree.root_node().has_error() {
+        return None;
+    }
+    Some(
+        analyze::function_shapes(language, &source, &tree)
+            .into_iter()
+            .map(|shape| (shape.name.clone(), shape))
+            .collect(),
+    )
 }
 
 fn enforce_prove_budget(scans: &[FileScan], diff_mode: bool, violations: &mut Vec<Violation>) {
@@ -618,10 +813,21 @@ fn check_dependency_cycles(
     let mut edges = BTreeMap::new();
     for scan in all {
         for import in &scan.imports {
+            if import.type_only {
+                continue;
+            }
             let Some(specifier) = analyze::dependency_path(import) else {
                 continue;
             };
-            if let Some(target) = resolve_dependency(&scan.relative, &specifier, &known) {
+            if let Some(target) = resolve_dependency(
+                &scan.relative,
+                &specifier,
+                scan.python_package.as_ref(),
+                &known,
+            ) {
+                if target == scan.relative {
+                    continue;
+                }
                 graph.entry(&scan.relative).or_default().push(target);
                 edges.insert((scan.relative.as_str(), target), import);
             }
@@ -740,19 +946,63 @@ fn visit_cycle<'a>(
     search.state.insert(file, 2);
 }
 
+fn python_package_context(file: &DiscoveredFile) -> Option<(String, String)> {
+    if file.language != crate::language::Language::Python {
+        return None;
+    }
+    let mut abs_dir = file.absolute.parent()?;
+    let mut rel_dir = Path::new(&file.relative).parent().unwrap_or(Path::new(""));
+    let mut pkg_name = None;
+    let mut pkg_dir = rel_dir;
+    while abs_dir.join("__init__.py").is_file() || abs_dir.join("__init__.pyi").is_file() {
+        pkg_name = abs_dir
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned());
+        pkg_dir = rel_dir;
+        rel_dir = rel_dir.parent().unwrap_or(Path::new(""));
+        abs_dir = abs_dir.parent()?;
+    }
+    Some((pkg_name?, pkg_dir.to_string_lossy().replace('\\', "/")))
+}
+
 fn resolve_dependency<'a>(
     current: &str,
     specifier: &str,
+    python_package: Option<&(String, String)>,
     known: &BTreeSet<&'a str>,
 ) -> Option<&'a str> {
     let parent = Path::new(current).parent().unwrap_or(Path::new(""));
-    let joined = specifier.strip_prefix('/').map_or_else(
-        || normalize_path(&parent.join(specifier)),
-        |relative| normalize_path(Path::new(relative)),
-    );
-    let base = joined.to_string_lossy().replace('\\', "/");
-    let candidates = if Path::new(&base).extension().is_some() {
-        vec![base.clone()]
+    if let Some(absolute) = specifier.strip_prefix('/') {
+        let path = Path::new(absolute);
+        let first = path
+            .components()
+            .next()
+            .map(|part| part.as_os_str().to_string_lossy().into_owned())
+            .unwrap_or_default();
+        if let Some((pkg_name, pkg_dir)) = python_package {
+            if first == *pkg_name {
+                let rest = path.strip_prefix(&first).unwrap_or(path);
+                let base = normalize_path(&Path::new(pkg_dir).join(rest))
+                    .to_string_lossy()
+                    .replace('\\', "/");
+                return resolve_module_base(&base, known);
+            }
+            if pkg_dir.is_empty() {
+                return None;
+            }
+        }
+        let base = normalize_path(path).to_string_lossy().replace('\\', "/");
+        return resolve_module_base(&base, known);
+    }
+    let base = normalize_path(&parent.join(specifier))
+        .to_string_lossy()
+        .replace('\\', "/");
+    resolve_module_base(&base, known)
+}
+
+fn resolve_module_base<'a>(base: &str, known: &BTreeSet<&'a str>) -> Option<&'a str> {
+    let candidates = if Path::new(base).extension().is_some() {
+        vec![base.to_owned()]
     } else {
         vec![
             format!("{base}.ts"),

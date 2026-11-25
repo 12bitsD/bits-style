@@ -50,6 +50,7 @@ bits style check --diff --commit 61a5793 src
 - 未跟踪文件按全文件检查；纯删除且没有新增行的文件不进入扫描。
 - 为检查新增依赖环，按需解析本地 import 可达的未变更文件作为只读上下文。上下文不计入 `files_scanned`、coverage 或 unsupported，其普通违规和解析错误不进入 diff 报告；只有与新增/修改行相交的依赖环诊断会被保留。
 - `--changed` 和 `--staged` 保持原有的整文件扫描行为。
+- **`improving` 棘轮**：对基线 commit 中已存在的同名函数，若 `BCS003` 的嵌套层数或圈复杂度仍超阈值但相对基线**严格下降**，扫描器读取 `git show <base>:./<file>` 比对后，将该诊断置为 `improving = true`、`severity = warning`、`obligation = ratchet_improving`，不阻断 `check`。新函数或指标持平/恶化仍为硬错误。
 
 文件发现遵循 `.gitignore`，排除 `.git/`、依赖目录、构建产物、明确的生成代码和目录符号链接。同一文件规范化后只扫描一次。没有匹配文件属于成功扫描。
 
@@ -67,10 +68,21 @@ bits style check --diff --commit 61a5793 src
 - `severity = warning`：需要人工判断的提示，不阻断 CI。BCS003 的行数/局部变量、TSX 保守格式提示和无法确认边界的 catch-all 转换属于此类。
 - `confidence = high|low`：描述判定置信度，不代替 severity。升级为 `violation` 的函数级硬错误必须同时标记 `confidence = high`。
 - `category`：可选，优雅性维度分类：`level-purity`、`control-flow`、`state-gain`、`symmetry`、`role`。
-- `obligation`：可选，处理义务：`refactor`（必须重构）、`prove_minimalism`（建议重构或登记稀缺举证）、`critic_review`（已附 `bits:prove`，待独立 Critic 核验）。
+- `obligation`：可选，处理义务：`refactor`（必须重构）、`prove_minimalism`（建议重构或登记稀缺举证）、`critic_review`（已附 `bits:prove`，待独立 Critic 核验）、`ratchet_improving`（diff 棘轮命中，指标较基线下降）。
+- `improving`：可选布尔值，为 `true` 时表示该诊断命中了 diff `improving` 棘轮。
 - `explanation`：可选的说明文本，来自 `bits:prove` 或兼容的 `bits:explain(BCS003)`；warning 缺失说明时文本报告输出温和提示，不强制要求补注释。
 - `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
-- `summary.warnings`、`summary.unsupported_files` 和 `summary.proves` 分别统计 warning、unsupported 文件和处于 `critic_review` 的举证数。
+- `summary.warnings`、`summary.unsupported_files`、`summary.proves` 和 `summary.improving` 分别统计 warning、unsupported 文件、处于 `critic_review` 的举证数和命中棘轮的诊断数。
+
+## 3.2 配置文件
+
+```toml
+# bits.toml
+exclude = ["**/generated/**", "vendor/**"]
+io_sources = ["Client.request", "db.query", "my_io::*"]
+```
+
+`io_sources` 为追加的 IO 调用 glob 模式，在内置 IO 源头（`open`、`os.*`、`subprocess.*`、`httpx.*`、`fetch`、`std::fs::*` 等）之上生效，供 `BCS017`（`bits:spec(pure)` 污点传播）判定直接 IO 源。
 
 ## 4. 扫描流程
 
@@ -132,7 +144,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.4.0" },
+  "tool": { "name": "bits", "version": "0.4.1" },
   "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {
@@ -173,7 +185,8 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
     "violations_fixed": 0,
     "suppressed_violations": 0,
     "unsupported_files": 0,
-    "proves": 1
+    "proves": 1,
+    "improving": 0
   }
 }
 ```

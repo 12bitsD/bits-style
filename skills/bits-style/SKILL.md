@@ -24,7 +24,7 @@ Canonical references:
 
 Resolve these before acting:
 
-- `bits` executable and its version. The current integration version is `v0.4.0`.
+- `bits` executable and its version. The current integration version is `v0.4.1`.
 - Repository root and the Git revision used for comparisons, normally `origin/main`.
 - Whether this is first adoption, incremental work, or CI hard-gate adoption.
 - Existing language formatters and tests. Bits supplements them.
@@ -85,6 +85,8 @@ Distinguish the two annotations strictly:
 - `bits:prove(<rule>[, test=<test_name>]): <why this is the minimal form>; <concrete risk if removed/simplified>` — scarce tech-debt registration for warnings only. It never waives hard violations, allows at most **1 new proof per diff**, and must be verified by an **independent Critic or human** (never self-approved by the author agent). High-risk boundary claims must point to a real test. Unused `bits:prove` is a hard error.
 
 For pass-through layers, keep only invariants owned by this module (reserved keys, auth, structural envelope); let downstream validation reject invalid provider parameters and wrap/forward the original error at the boundary. When a framework (e.g. `argparse`) has already parsed a structure, bind handlers directly (e.g. `set_defaults(handler=...)`) instead of re-branching on command strings.
+
+Functions marked `bits:spec(pure)` must stay free of IO taint (`BCS017`): pass data in as parameters and move `open`/network/process calls to an outer adapter, declaring project-specific IO entrypoints via `io_sources` in `bits.toml`. When refactoring an existing complex function in `--diff` mode, reduce its nesting or cyclomatic complexity so any remaining `BCS003` overage is marked `improving = true` by the ratchet; never add complexity to an already-over-threshold function or create new over-threshold functions.
 
 ### 4. Verify behavior and coverage
 

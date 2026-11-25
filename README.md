@@ -64,7 +64,10 @@ Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，�
 
 - **Warning 不要求补注释**。处理顺序固定为：删冗余层 → 换成表/Schema/handler 绑定 → 按职责拆分 → 最后才登记稀缺举证。
 - `bits:allow(RULE): 理由` 仅用于外部硬契约；`bits:prove(RULE[, test=name]): 最简理由；具体风险` 仅用于 warning，**每次 diff 最多新增 1 条**，不能豁免硬错误，且必须由独立 Critic/人核验。未命中告警的 `allow`/`prove` 直接报 `BCS015` 硬错误（墓碑清理）。
-- 新增 `BCS016`：穷尽互斥分支头部重复同一前置调用（如 `await harness.check()`）时提示提升或绑定 handler。在 `click`/`httpx`/`rich` 共 140 个文件上 0 误报（`bits bench`）。
+- 新增 `BCS016`：穷尽互斥分支头部重复同一前置调用（如 `await harness.check()`）时提示提升或绑定 handler。
+- 新增 `BCS017` 污点传播：显式标记 `bits:spec(pure)` 的函数直接或经调用链触碰 IO（内置常见 IO 模块 + `bits.toml` 的 `io_sources`）即报硬错误。
+- **`improving` 棘轮**：`--diff` 下已存在函数的 `BCS003` 嵌套或圈复杂度相对基线严格下降时，标记 `improving = true` 并降为 warning 放行；新函数和恶化改动仍硬拦截。
+- 在锁定 commit 的 `click`/`httpx`/`rich` 上，`BCS016`/`BCS017` 均 0 误报，整体 L1 硬错误较初测下降 56%（详见 [基线报告](benchmarks/BASELINE.md)）。
 - React 组件自动接受 PascalCase 和展示型布尔 props；JSX 区域交给 formatter，TSX 保守提示不阻断 CI。
 - `severity = violation` 才返回 1；warning 只进入报告。`report` 展示全部结果。
 - Go 等未适配文件进入 `unsupported` 列表，`check` 返回 2；Rust 已适配的部分按 `partial` 明确报告，不再形成“未覆盖却 passed”。
@@ -143,6 +146,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的存量�
 ```toml
 # bits.toml
 exclude = ["**/generated/**", "vendor/**"]
+io_sources = ["Client.request", "db.query"]
 ```
 
 ```bash
@@ -175,7 +179,7 @@ cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
 ```
 
-109 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
+113 个测试覆盖规则边界、Profile、diff-only、指定 commit、跨文件依赖上下文、suppression、baseline、协议输出、Schema、退出码、并行确定性和修复幂等，其中集成测试直接驱动真实 CLI。
 
 ## License
 

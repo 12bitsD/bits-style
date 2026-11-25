@@ -148,7 +148,8 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 禁止新增可变全局变量、Singleton 和隐式上下文输入。
 - 默认使用 `const/final` 或语言等价机制 `[AUTO-PROFILE]`。
 - 禁止给函数参数重新赋值；对象属性更新与参数绑定替换必须区分。
-- 类型别名不是可变全局状态；`Annotated/Literal/Callable` 等按类型表达式处理。
+- 类型别名不是可变全局状态；`Annotated/Literal/Callable`（含 `typing.` 前缀）按类型表达式处理。
+- Python 中带类型注解的 `UPPER_SNAKE` 常量、模块级 `logger`、`if __name__ == "__main__":` 入口块内变量、`except ImportError: mod = None` 可选依赖回退不属于可变全局状态。
 - 禁止变量遮蔽，包括局部变量遮蔽参数。
 - 变量是否处于足够小的作用域和生命周期 `[REVIEW]`。
 
@@ -171,9 +172,9 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 
 ### BCS014　依赖与无用代码 `[AUTO-CORE]`
 
-- 模块依赖必须无环。
-- 禁止未使用的导入、依赖、变量、函数和不可达代码。
-- 禁止通配符导入，禁止保留注释掉的旧实现。
+- 模块运行时依赖必须无环；`TYPE_CHECKING` / `import type` 仅类型边不进入运行时环图，自环边忽略。Python 绝对导入按 `__init__.py` 包根解析，不将标准库同名模块误判为包内模块。
+- 禁止未使用的导入、依赖、变量、函数和不可达代码；Python 类型注解与类型别名中的字符串前向引用（如 `x: "Console"`、`Union["URL", str]`）及 `# noqa: F401` 显式导出计为真实引用，普通字符串（如 `VALUE = "os"`）不计。
+- 禁止通配符导入（`__init__.py` 中 `from .mod import *` 相对公开导出除外），禁止保留注释掉的旧实现。
 - 接口或回调的未使用参数必须使用 Profile 规定的 `_`、`_name` 或 `[[maybe_unused]]` 等显式标记。
 
 ### BCS015　注释与源码元数据 `[AUTO-CORE]`
@@ -190,6 +191,12 @@ bits:explain(BCS003): <具体机制>；<共享状态/资源/顺序约束>；<具
 - 带兜底 `else` 的穷尽 `if/elif/else` 链，且所有分支条件无副作用时，若每个分支的首条语句都是完全相同的独立调用（如 `await harness.check()`），产生 `warning`（`category = symmetry`，`obligation = prove_minimalism`）。
 - 将该调用提升到分支之前语义等价；若各分支实际在做命令路由，优先改为注册表或 `set_defaults(handler=...)` 直接绑定处理函数。
 - 无 `else` 的非穷尽分支、含副作用条件（如条件中调用函数）或首条调用不一致时不报警。
+
+### BCS017　纯度契约与污点传播 `[AUTO-CORE]`
+
+- 显式标记 `bits:spec(pure)` 的函数不得直接或经调用链间接调用 IO 污点代码，违者报**硬错误**（`category = role`，`obligation = refactor`）。
+- 内置常见 IO 调用与模块（`open`、`print`、`fetch`、`os.*`、`subprocess.*`、`httpx.*`、`std::fs::*`、`*.read_text` 等，含 `import os as o` 别名与 `from os import getenv` 绑定）；项目可在 `bits.toml` 用 `io_sources = ["Client.request", "db.*"]` 追加 glob 源头。
+- 宁漏勿错：不自动推断 `pure`；跨文件只沿真实 import 绑定传播；无法静态确认接收者类型的方法调用（如 `client.get()`）默认不误报，需通过 `io_sources` 显式声明。
 
 ## 3. 抽象约束 `[REVIEW]`
 
@@ -232,10 +239,6 @@ bits:prove(BCS016): check 内部依赖分支求值顺序；提升会改变初始
 - **过期即删**：未命中任何活跃 warning 的 `bits:prove` 直接报 `BCS015` 硬错误。
 - `bits:explain(BCS003)` 作为 V0.3 兼容字段保留，新代码统一使用 `bits:prove`。
 
-### 4.3 污点传播（规划中）
-
-配置文件只需声明底层 IO 源头（如 `httpx.*`、`open`、`subprocess.*`），沿调用图向上标记 IO 污点；显式标记 `bits:spec(pure)` 的函数调用链一旦触碰 IO 污点即报硬错误。当前版本尚未开启自动污点分析，不宣称已覆盖。
-
 生成代码和第三方代码通过扫描配置排除，不使用豁免注释；formatter-off 区域也必须使用规则号和理由，并立即恢复。
 
 ## 5. 生成代码、测试与存量代码
@@ -245,3 +248,4 @@ bits:prove(BCS016): check 内部依赖分支求值顺序；提升会改变初始
 - 存量代码使用 baseline：不得新增违规，新文件必须全量通过。
 - 使用 `bits style report --output bits-baseline.json` 生成基线，再使用 `bits style check --baseline bits-baseline.json`。
 - baseline 只隐藏与既有规则、文件、消息和实际值完全匹配的违规；移动代码行号不会自动产生新违规。
+- **`improving` 棘轮**：在 `--diff` 模式下，若已存在函数仍超出 `BCS003` 嵌套或圈复杂度阈值，但同名函数相对基线 commit 的对应指标**严格下降**，则该条诊断标记为 `improving = true`、`obligation = ratchet_improving`，降级为 warning 不阻断增量提交。复杂度持平/上升、或新增函数不享受棘轮，仍为硬错误。

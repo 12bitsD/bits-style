@@ -36,9 +36,13 @@ fn text(report: &Report, include_passed: bool) -> String {
             violation.severity,
             violation.confidence
         ));
+        if violation.improving {
+            output.push_str("  ratchet: improving (complexity reduced vs base; keep going)\n");
+        }
         if let Some(explanation) = &violation.explanation {
             output.push_str(&format!("  explanation: {explanation}\n"));
-        } else if violation.severity == "warning"
+        } else if !violation.improving
+            && violation.severity == "warning"
             && (violation.rule_id == "BCS003"
                 || violation.obligation.as_deref() == Some("prove_minimalism"))
         {
@@ -66,10 +70,11 @@ fn text(report: &Report, include_passed: bool) -> String {
         }
     }
     output.push_str(&format!(
-        "Scanned: {} files\nViolations: {}\nWarnings: {}\nFixable: {}\nSuppressed: {}\nUnsupported: {}\nScan errors: {}\nResult: {}\n",
+        "Scanned: {} files\nViolations: {}\nWarnings: {}\nImproving: {}\nFixable: {}\nSuppressed: {}\nUnsupported: {}\nScan errors: {}\nResult: {}\n",
         report.summary.files_scanned,
         report.summary.violations,
         report.summary.warnings,
+        report.summary.improving,
         report.summary.fixable_violations,
         report.summary.suppressed_violations,
         report.summary.unsupported_files,
@@ -113,6 +118,7 @@ fn jsonl(report: &Report, include_passed: bool) -> Result<String, String> {
                 "explanation": violation.explanation,
                 "category": violation.category,
                 "obligation": violation.obligation,
+                "improving": violation.improving,
             }))
             .map_err(|error| error.to_string())?,
         );
@@ -200,6 +206,7 @@ fn sarif_result(violation: &Violation) -> Value {
             "explanation": violation.explanation,
             "category": violation.category,
             "obligation": violation.obligation,
+            "improving": violation.improving,
         },
         "locations": [{
             "physicalLocation": {
