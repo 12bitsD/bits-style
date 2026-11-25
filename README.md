@@ -3,23 +3,21 @@
 [![CI](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml/badge.svg)](https://github.com/12bitsD/bits-style/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
-Bits’s Coding Style V0.4 的公开规范与参考扫描器。规范只约束代码本身，不包含 MVC、设计模式或评审流程。底层目标是让代码和逻辑简单到不容易出错；基础语法和官方 lint 已覆盖的问题不重复检查。
+一套面向人与 AI Agent 的编码规范、静态扫描器与品味审查协议。
 
-- [Coding Style V0.4：品味治理框架 + BCS001–BCS016](STYLE.md)
-- [Scanning Protocol V0.4](PROTOCOL.md)
-- [Bits Bench 基线体检报告](benchmarks/BASELINE.md)
-- [Agent 集成与 L2 Critic Skill](docs/agent-integration.md)
-- [Language Profiles](docs/profiles.md)
-- [Go Profile：错误、资源、并发与抽象](profiles/go.md)
-- [Rust 扫描支持边界](docs/rust-support.md)
-- [逐语言支持矩阵](docs/language-support.md)
-- [JSON Report Schema](schemas/report.schema.json)
+大多数风格工具要么纠结空格和行宽（官方 formatter 早已解决），要么给函数设一个行数上限。后者一旦变成硬门禁，就会逼着开发者（尤其是 Agent）把内聚的逻辑拆成一堆两行碎函数，或者写一句套话注释蒙混过关——指标变绿了，代码却更难读懂和维护。
 
-## 宗旨与原则
+Bits 的出发点是：**优雅不是把代码切得更碎，而是让不必要的结构消失，并且让这种简单能被低成本验证。** 规范只约束代码本身，不涉及架构分层、设计模式或评审流程；能由编译器和 formatter 判定的绝不重复检查，需要上下文判断的设计品味不靠正则硬猜。
+
+> 规范版本：**Style V0.4 / Protocol V0.4** · 扫描器版本：**v0.5.0**
+>
+> 文档导航：[编码规范（BCS001–BCS017）](STYLE.md) · [扫描协议](PROTOCOL.md) · [Agent 接入与 Skill](docs/agent-integration.md) · [语言支持矩阵](docs/language-support.md) · [基准体检报告](benchmarks/BASELINE.md) · [Profiles](docs/profiles.md) · [Report Schema](schemas/report.schema.json)
+
+## 取舍顺序
 
 > **正确 > 清晰 > 可修改 > 一致 > 简短**
 
-Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，并让这种简单能够被低成本验证。**
+所有规则冲突时，都按这个顺序裁决：
 
 | 优先级 | 原则 | 发生冲突时的取舍 |
 |---|---|---|
@@ -29,36 +27,32 @@ Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，�
 | 4. 一致 | 同一语言遵循生态惯例和项目统一约定 | 格式交给官方 formatter，外部 API/FFI/框架契约不被强行改名 |
 | 5. 简短 | 删除无用状态、分支、依赖和包装层 | 永远排在最后，不靠拆散内聚逻辑或删除必要注释凑行数 |
 
-围绕这个优先级，Bits 坚持四条底线：
+## 五条设计原理
 
-- **数据结构优先于分支修补**：先让类型、状态、默认值和表结构表达约束，让特殊情况消失，而不是继续叠加 `if`。
-- **内聚优先于函数行数**：按职责和阶段拆分，不按行数机械切段。深模块、小接口优于碎函数、上下文包装对象和纯转发层。
-- **工具揭示复杂性，不制造复杂性**：基础语法、格式和编译问题交给语言官方工具链与真实测试；Bits 只补充它们难以表达的复杂逻辑与结构风险，绝不要求为了清零报告而重构。
-- **验证成本低，边界诚实**：能确定性判断的才做硬门禁；不确定项输出 `warning` 或留给 `REVIEW`；`partial` 和 `unsupported` 必须显式展示，绝不当作全量通过。
+1. **读优先于写，删优先于增**
+   代码的主要成本在读和改，不在写。判断一段结构该不该保留，先问“删掉它会损失什么决策信息”，而不是“它有多少行”。优先让数据结构、零值和表结构表达约束，让特殊情况自然消失；深模块、小接口永远优于碎函数、上下文包装对象和纯转发层。
 
-## 迭代原则与方向
+2. **宁漏勿错（Precision > Recall）**
+   静态工具的信任极其脆弱：几次把正常代码判错的硬告警，就足以让开发者和 Agent 开始批量打豁免，工具随之失效。因此只有确定性结构矛盾才做硬门禁；拿不准的一律降为 warning 或交给审查层。扫描器的误报由扫描器自己修，绝不让用户靠打 `bits:allow` 消化。
 
-### 迭代原则
+3. **三层各守边界，不让 AST 猜语义**
+   不同层次的问题需要不同的判定能力，混在一层必然导致误报或漏判：
+   - **L0 卫生层（官方工具链）**：语法、格式、未使用变量和语言特有坑，交给 formatter、编译器、Ruff、Clippy、go vet 等。Bits 不重复造轮子，也不自动改写语义。
+   - **L1 拓扑层（`bits` AST）**：只抓不依赖业务含义的客观结构事实，如真实嵌套深度、断言显式副作用、互斥分支头部重复前置调用、`bits:spec(pure)` 触碰 IO。硬错误不能用注释豁免；warning 只负责圈定热区，不要求补注释。
+   - **L2 品味层（Skill + 独立 Critic）**：用**层级纯度、控制流平直度、信息增益、对称性**四个维度，只审查 Diff 改动函数与 L1 warning 热区，识别镜像下游校验、过度防御解析和层级混杂。无问题保持沉默。
 
-1. **先可信，再全面**：消除误报和 formatter 冲突优先于新增规则。真实项目反馈必须沉淀为正反例回归测试。
-2. **先增量，再全库**：优先完善 `--diff --commit`、baseline 和跨文件只读上下文，让存量项目不必全仓重写也能建立门禁。
-3. **语义重于格式**：新检查聚焦错误处理、状态与所有权、资源生命周期、并发、依赖环和真实控制流复杂度；格式只保留最小兜底。
-4. **跨语言同目标，各语言各习惯**：共享 `AUTO-CORE` 语义，各语言保留官方 formatter、命名惯例和外部数据契约。
+4. **以“修复后结果”论英雄（反刷分）**
+   凡是允许靠写注释通关的规则，Agent 永远会选阻力最小的路：写一句无懈可击的套话。因此 Bits 把外部硬契约豁免（`bits:allow`）与稀缺技术债举证（`bits:prove`）严格分开：举证必须给出具体风险与真实测试锚点、限制单次 diff 配额，且作者不能自审，必须交由独立 Critic 或人核验。一条规则好不好，不看抓出多少告警，而看修完之后代码是不是真的更干净。
 
-### 当前方向
+5. **从真实痛点生长，用顶级代码校准**
+   不拍脑袋造教条，只从真实 Review 踩坑中提炼规则。新规则进入 `AUTO-CORE` 前必须过三关：真实反面案例 `before/after` 验证、三语言 9 个锁定 commit 开源标杆库盲测（`bits bench`）、Agent 修复对抗测试；新复杂度指标先看全量分位数分布再定阈值。实测噪声超线的规则，果断收窄、降级或删除。
 
-- **扫描可信度**：持续收敛 TSX/JSX、Python 类型与 Pydantic、Rust trait/macro 以及跨文件引用的误报，保证主流 formatter 格式化后的合法代码零冲突。
-- **增量门禁与性能**：增强 diff 与指定 commit 的变更关联、跨文件依赖上下文和并行扫描，在保持输出确定性的前提下降低大仓扫描成本。
-- **语言适配深度**：将 Rust 从 partial 向常用语义稳步推进；落地 Go 扫描适配，重点覆盖 `error`、`defer`、`context`/goroutine 生命周期和共享状态，并与 `gofmt`、`go vet`、`staticcheck`、`go test -race` 明确分工。
-- **Agent 原生接入**：持续打磨 [`bits-style` Skill](skills/bits-style/SKILL.md) 与项目模板，让 Agent 按 `report → 分类 → 最小修复 → 项目测试 → 重扫` 闭环工作。
+## 演进方向
 
-新规则进入 `AUTO-CORE` 前必须同时满足：可确定性判定、误报率低、有真实项目正反例、严重级别明确，且不会诱导开发者拆散内聚逻辑或增加状态包装。做不到的规则只进入 `AUTO-PROFILE`、`warning` 或 `REVIEW`。
-
-## 三层漏斗（V0.4）
-
-- **L0 卫生层**：官方 formatter / Ruff / Mypy / Clippy / TSC 负责语法、格式、重复导入、未使用变量和 `assert`，Bits 不重复造轮子。
-- **L1 拓扑层（`bits` AST）**：只抓纯结构事实，不猜业务语义。`AUTO-CORE` 负责跨语言硬门禁与高信噪比提示，`AUTO-PROFILE` 负责语言 Profile 格式底线。
-- **L2 品味层（Skill + 独立 Critic）**：只聚焦 Diff 改动函数和 L1 Warning 热区，用**层级纯度、控制流平直度、信息增益、对称性**四个维度追问；无问题保持沉默。
+- **先增量，再全库**：通过 `--diff --commit`、baseline 与 `improving` 棘轮（复杂度严格下降即放行），让存量仓库不必一次性重写，也能建立只进不退的门禁。
+- **扫描可信度**：持续收敛 TSX/JSX、Python 类型、Rust trait/macro 与跨文件引用的误报，保持与主流 formatter 格式化结果零冲突。
+- **语言适配深度**：Python、Rust、Go 均已接入 partial 扫描；在保持 L0/L1 去重的前提下，稳步推进 Rust 常用语义与 Go 资源/并发生命周期的确定性检查。
+- **Agent 原生闭环**：持续打磨 [`bits-style` Skill](skills/bits-style/SKILL.md) 与项目模板，让 Agent 按 `report → 分类 → 最小修复 → 真实测试 → 重扫` 闭环工作。
 
 ## Warning、举证与 Unsupported
 
@@ -85,7 +79,7 @@ Bits 的底层需求是：**写出简单到不容易出错的代码和逻辑，�
 运行扫描器需要 [Rust 工具链（含 Cargo）](https://rustup.rs/)；Cargo 是 Rust 的构建与包管理器。被扫描的项目不需要使用 Rust；只阅读规范或按 Agent Skill 约束编码时，也不必安装扫描器。
 
 ```bash
-cargo install --git https://github.com/12bitsD/bits-style --locked
+cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked
 ```
 
 本地构建：
