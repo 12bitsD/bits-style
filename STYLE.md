@@ -87,28 +87,34 @@
 
 - 默认每行不超过 80 列，Profile 可以调整行宽。
 - 续行缩进以及运算符放行首或行尾由 Profile 和 formatter 统一决定。
-- 不得为了满足行宽拆分用户可见字符串、日志或错误信息、URL。
-- 上述不可拆分文本是唯一的超宽例外。
+- 不得为了满足行宽拆分用户可见字符串、多行字符串/模板/docstring、日志或错误信息、URL；这些场景自动豁免。
 
-### BCS003　函数规模 `[AUTO-CORE]`
+### BCS003　函数规模与模块体量 `[AUTO-CORE]`
 
-每个函数同时检查四项指标：
+每个函数同时检查四项指标（测试代码与业务代码执行同样严格的规模约束）：
 
 - 非空、非注释代码行不超过 48 行。纯字符串内容和多行类型声明不计入函数实现行数，只产生 warning。
-- 控制流嵌套不超过 3 层，属于确定的 violation。
+- 控制流嵌套不超过 3 层，属于确定的 violation，并附带 Top 热点行号归因（`hotspots`）。
 - 局部变量不超过 10 个；`int a, b;` 计两个，参数不计，只产生 warning。
-- 圈复杂度不超过 10，属于确定的 violation。扁平 `switch/match` 的 `case` 不增加圈复杂度，但分支内的其他判断仍然计数。
+- 圈复杂度不超过 10，属于确定的 violation，并附带 Top 热点行号归因（`hotspots`）。扁平 `switch/match` 的 `case` 不增加圈复杂度，但分支内的其他判断仍然计数。
+- **模块体量（非测试文件）**：单文件非空、非注释、非导入净代码行超过 300 行时产生 `warning`（`category = level-purity`），遏制上帝文件膨胀。
+- **单调用瘦包装（Thin Wrapper）**：文件内仅被调用 1 次的私有 helper 函数，若函数体仅 1 条 `return callee(原样全部参数)`，产生 `warning`（`category = level-purity`）并给出内联处方。
 
-- **认知复杂度 `cognitive_v1`（Sonar 白皮书口径，观测中）**：普通 `if`/循环/`catch`/三元/整个 `match/switch` 记 `1 + 当前嵌套`；`elif`/`else if`/`else` 只记 `+1`；逻辑运算按连续序列计分，`goto`/直接自递归/`match guard` 各记 `+1`。当前 `> 15` 输出高置信 `warning`（shadow 观测），硬阈值待跨语言基准 P95/P99 分布校准后再定。`else if` 与 Python `elif` 已统一嵌套深度。
+- **认知复杂度 `cognitive_v1`（Sonar 白皮书口径，观测中）**：普通 `if`/循环/`catch`/三元/整个 `match/switch` 记 `1 + 当前嵌套`；`elif`/`else if`/`else` 只记 `+1`；逻辑运算按连续序列计分，`goto`/直接自递归/`match guard` 各记 `+1`。当前 `> 15` 输出高置信 `warning`（shadow 观测，附带 `hotspots`），硬阈值待跨语言基准 P95/P99 分布校准后再定。`else if` 与 Python `elif` 已统一嵌套深度。
 
-行数和局部变量数超过阈值产生 `warning`，不直接阻断 CI。真实嵌套和圈复杂度超过阈值仍属于 violation。优先删除冗余层或按职责拆分，不按行数机械切段，也不为了达标拆散内聚逻辑；确需保留时使用第 4.2 节的 `bits:prove`。
+行数、文件体量和局部变量数超过阈值产生 `warning`，不直接阻断 CI。真实嵌套和圈复杂度超过阈值仍属于 violation。优先删除冗余层或按职责拆分，不按行数机械切段，也不为了达标拆散内聚逻辑；确需保留时使用第 4.2 节的 `bits:prove`。
 
 ### BCS004　函数接口 `[AUTO-CORE]`
 
-- 参数不超过 4 个，不包含语言隐含的 `this/self`，超过产生 warning。对象字段和响应数据中的布尔值不属于行为开关。
+- 参数不超过 4 个，不包含语言隐含的 `this/self/cls` 以及 Python 裸 `*` 分隔符，超过产生 warning。Python 中对含 `*` 具名 keyword-only 参数的函数：位置参数仍须 `<= 4`，普通函数总业务参数上限为 `6`，`__init__`/`__new__` 依赖注入构造器总业务参数上限为 `8`。对象字段和响应数据中的布尔值不属于行为开关。
 - 禁止无默认值的位置布尔参数切换行为（如 `run(enabled: boolean)`）；带默认值的具名配置项或 keyword-only 选项（如 `follow_redirects: bool = False`）不属于布尔陷阱。React 组件的展示型布尔 props 由 React Profile 自动识别。
 - 分离的函数声明必须包含参数名。
 - 外部框架、接口、回调和 FFI 强制的签名可以通过行级豁免保留。
+- 返回 `None`/`void` 且原地修改 ≥ 2 个参数容器（如 `.append`/`.add`/`.update`/`.setdefault`/`.push`/`p[k] = ...`）的多出参函数产生 `warning`（`category = state-gain`），并附带返回结构化结果的处方。
+- **设计力学检测（全部附带可执行 `prescription` 处方，输出为 `warning`）**：
+  - **Data Clump（数据团块）**：同文件 ≥ 3 个不同名函数反复共享同一组 ≥ 3 个业务参数时，提示合并为不可变值对象（`dataclass`/`struct`）。
+  - **Tramp Data（透传胶水）**：≥ 5 参数函数把一半以上（且 ≥ 4 个）参数原样直传给同一个下游调用（排除 `super()`）时，提示改为直接传对象或由调用方构造。
+  - **Adjacent Same-Type Positional Params（相邻同类型位置参数）**：Python/TS/TSX 函数位置参数 ≥ 3 且出现相邻同基础类型非对称参数（如 `after_seq: int, max_events: int`）时，提示加 `*` 强制 keyword-only 或收成具名选项对象。
 - 不得使用无约束的 `map/dict/options` 打包互不相关的参数来规避限制 `[REVIEW]`。
 
 ### BCS005　控制流 `[AUTO-CORE]`
@@ -122,11 +128,11 @@
 
 ### BCS006　语句与表达式 `[AUTO-CORE]`
 
-- 每行最多一条语句，禁止一行多个赋值和链式赋值。
+- 每行最多一条语句，禁止一行多个赋值；可变容器字面量或调用结果的链式赋值（如 `a = b = []`、`a = b = make()`）为硬错误，纯标量链式赋值（如 `lo = hi = 0`）为 warning。
 - 禁止在条件表达式内赋值；语言提供的结构化条件初始化语法由 Profile 决定。
 - 链式赋值按真实 assignment target 判断，函数调用的关键字参数不属于链式赋值。
 - 禁止使用逗号表达式代替大括号。
-- 禁止嵌套三元表达式和双重否定条件。
+- 禁止嵌套三元表达式（含用括号包裹的嵌套三元）和双重否定条件。
 - 混合不同优先级的运算符时必须加括号。
 - **断言条件禁止显式副作用（硬错误）**：Python `assert` 或 C/JS `assert(...)` 的条件子树中禁止出现 `:=`、赋值 `=`、`+=`、`++/--` 等语法级变异（`-O`/`NDEBUG` 裁剪会改变程序行为）；普通谓词调用如 `assert len(x) > 0`、`assert is_valid(x)` 不报警。
 - 是否构成难以理解的高密度表达式 `[REVIEW]`。
@@ -163,7 +169,7 @@
 
 ### BCS011　状态与可变性 `[AUTO-CORE]`
 
-- 禁止新增可变全局变量、Singleton 和隐式上下文输入。
+- 禁止新增可变全局变量、Singleton 和隐式上下文输入。Python `nonlocal` 跨闭包改写外层状态报硬错误，`global` 报 warning。环境变量读取应在入口边界完成并显式传参；Composition Root（`main`、`run_cli`、`cli_main`、`if __name__ == "__main__":`）及已接受显式 `env`/`environ`/`env_override` 注入参数的回退读取自动放行。
 - 默认使用 `const/final` 或语言等价机制 `[AUTO-PROFILE]`。
 - 禁止给函数参数重新赋值；对象属性更新与参数绑定替换必须区分。
 - 类型别名不是可变全局状态；`Annotated/Literal/Callable`（含 `typing.` 前缀）按类型表达式处理。
@@ -182,7 +188,7 @@
 
 ### BCS013　错误处理 `[AUTO-CORE]`
 
-- 禁止空异常处理和静默吞错；解析、守卫等场景的预期 `false/null` 失败结果只产生低置信 warning，不与伪造成功混为硬错误。
+- 禁止空异常处理和静默吞错（硬错误）；宽泛 `except:` / `except Exception:` / `catch (...)` 中仅写裸 `return`/`continue`/`break` 静默丢弃异常同样为硬错误；`catch/except` 返回伪造成功值（`return true/True`、`return 0`、`return {"ok": True}`、隐式空 `return`）产生 warning；解析/探针场景返回显式失败或缺失哨兵（`return false/False`、`return null/None/undefined`）不误报。
 - 必须忽略清理路径错误时，使用 Profile 规定的显式丢弃写法，禁止空 `catch/except`。
 - catch-all 只能继续抛出，或在系统边界转换为明确的错误类型；无法静态确认边界的转换只产生低置信 `warning`。
 - 非 void、非单元返回值必须检查或显式丢弃 `[AUTO-PROFILE]`。
@@ -192,7 +198,7 @@
 ### BCS014　依赖与无用代码 `[AUTO-CORE]`
 
 - 模块运行时依赖必须无环；`TYPE_CHECKING` / `import type` 仅类型边不进入运行时环图，自环边忽略。Python 绝对导入按 `__init__.py` 包根解析，不将标准库同名模块误判为包内模块。
-- 禁止未使用的导入、依赖、变量、函数和不可达代码；Python 类型注解与类型别名中的字符串前向引用（如 `x: "Console"`、`Union["URL", str]`）及 `# noqa: F401` 显式导出计为真实引用，普通字符串（如 `VALUE = "os"`）不计。
+- 禁止未使用的导入、依赖、变量、函数和不可达代码；Python 私有 `_fn`（未被同仓其他模块导入或 `__all__` 导出）及 JS/TS ES Module 中未导出的顶层函数/`const` 仅出现一次时产生死代码 `warning`；Python 类型注解与类型别名中的字符串前向引用（如 `x: "Console"`、`Union["URL", str]`）及 `# noqa: F401` 显式导出计为真实引用，普通字符串（如 `VALUE = "os"`）不计。
 - 禁止通配符导入（Python `__init__.py` 相对公开导出；Rust `pub`/`pub(...)` 再导出、prelude、枚举变体、`#[cfg(...test...)]`、测试/模拟文件及同文件内联子模块的 `use super::*` 除外）；Go 非测试文件的 dot import 报 warning。禁止保留注释掉的旧实现（多行说明块、文档示例与映射说明句不算旧实现）。Rust/Go 的未使用导入交由 `rustc` / Go 编译器判定。
 - 接口或回调的未使用参数必须使用 Profile 规定的 `_`、`_name` 或 `[[maybe_unused]]` 等显式标记。
 
@@ -213,10 +219,12 @@
 - 将该调用提升到分支之前语义等价；若各分支实际在做命令路由，优先改为注册表或 `set_defaults(handler=...)` 直接绑定处理函数。
 - 无 `else` 的非穷尽分支、含副作用条件（如条件中调用函数）或首条调用不一致时不报警。
 - **相邻同体分支**：相邻 `if/elif` 分支的归一化 AST 执行体完全相同时，报 `warning`（`category = symmetry`），提示用 `or`/`||` 合并条件；跨 `else` 不重排，含 `typeof`/`isinstance`/`:=` 等类型收窄或绑定条件时跳过。
+- **重复字符串分发（Repeated Dispatch）**：同文件内出现 ≥ 2 处长 `if/elif` 字符串等值链（≥ 4 分支且共享 ≥ 3 个相同字符串 key）时，报 `warning`（`category = symmetry`）并提示收口为单一注册表或策略表。
 
-### BCS017　纯度契约与污点传播 `[AUTO-CORE]`
+### BCS017　纯度契约、污点传播与模块分层 `[AUTO-CORE]`
 
-- 显式标记 `bits:spec(pure)` 的函数不得直接或经调用链间接调用 IO 污点代码，违者报**硬错误**（`category = role`，`obligation = refactor`）。
+- 显式标记 `bits:spec(pure)` 的函数，或匹配 `bits.toml` 中 `[[layers]]` 且 `pure = true` 层的模块内所有函数，不得直接或经调用链间接调用 IO 污点代码，违者报**硬错误**（`category = role`，`obligation = refactor`）。
+- 可在 `bits.toml` 中通过 `[[layers]]` 声明 `name`、`paths`、`pure`、`forbid_imports`（禁止导入的层名或模块 glob）和 `allow_imports`（白名单层名）；违反跨层导入边界直接报 `BCS017` **硬错误**。
 - 内置常见 IO 调用与模块（`open`、`print`、`fetch`、`os.*`、`subprocess.*`、`httpx.*`、`std::fs::*`、`*.read_text` 等，含 `import os as o` 别名与 `from os import getenv` 绑定）；项目可在 `bits.toml` 用 `io_sources = ["Client.request", "db.*"]` 追加 glob 源头。
 - 宁漏勿错：不自动推断 `pure`；跨文件只沿真实 import 绑定传播；无法静态确认接收者类型的方法调用（如 `client.get()`）默认不误报，需通过 `io_sources` 显式声明。
 

@@ -164,3 +164,47 @@ bits bench --offline  # 使用本地缓存复跑，保证可复现
 1. `cognitive_v1 > 15` 在三语言下稳定落在 **P95（7）与 P99（20）之间**，继续保持高置信 shadow warning，不急着晋升硬门禁。
 2. 当前 Bits 的圈复杂度已对扁平 `match/switch` 分支做减法，因此误伤率很低（仅 2.5%）；保留“嵌套 >3 / 圈复杂度 >10 硬错误 + 认知复杂度 >15 shadow warning”的分层，配合 `bits bench` 新增的交叉统计持续观察。
 3. 修复了 `bench` 统计口径：`warned_fns` 改为在剔除格式化规则（`BCS001/002/007/008/009`）后按函数区间统计，确保三语言横向可比。
+
+---
+
+# V0.6.0 实战反馈驱动：防刷分、减噪与 Agent-in-the-loop 校准
+
+基于两份真实 Agent 开发仓（51 文件 Python 仓与 96 文件多语言全栈仓 `pocket`）的 30+ 轮实战复盘，完成五组高信噪比校准：
+
+## 9 库 L1 基准对比（V0.5.0 → V0.6.0，已剔除格式化规则）
+
+| 仓库 | 函数数 | V0.5.0 violations | V0.6.0 violations | V0.6.0 `warned_fns` | 关键变化 |
+|---|---:|---:|---:|---:|---|
+| `click` | 586 | 272 | **252**（-20） | 13.99% | 5 条反坏品味 + 设计力学全量接入；私有死代码 0 误报 |
+| `httpx` | 446 | 81 | **80**（-1） | 14.13% | 精准识别 `_api.py`/`_client.py` 透传胶水与参数团块 |
+| `rich` | 910 | 315 | **311**（-4） | 20.66% | 标量链式降 warning + 括号嵌套三元补漏 |
+| `serde` | 521 | 0 | **0** | 2.30% | 保持 0 硬错误，0 新增设计误报 |
+| `ripgrep` | 2,953 | 83 | **83** | 3.66% | 基本持平 |
+| `tokio` | 3,732 | 80 | **80** | 2.49% | 基本持平 |
+| `cobra` | 240 | 16 | **16** | 4.58% | 稳定 |
+| `zap` | 592 | 6 | **6** | 1.35% | 稳定 |
+| `go-tools` | 678 | 86 | **86** | 9.88% | 稳定 |
+| **合计** | **10,658** | **939** | **914（-25）** | **5.93%** | 正样本 **4 / 4** 全通；反坏品味 + 4 大设计力学全部验证 |
+
+## 本轮落地的核心改动
+
+1. **多语言仓库默认友好**：目录扫描与 `--diff` 默认跳过未支持后缀（仍记录 `unsupported` / `unsupported_files`），仅在 `--strict-unsupported` 或命令行点名单文件时返回退出码 2。
+2. **精准减噪（不松口行宽、函数行数与局部变量约束）**：
+   - `BCS002`（80 列）保持硬错误，修复多行字符串/模板/docstring/URL 豁免；
+   - `BCS003`：测试与业务统一保持 48 行 / 10 局部变量 / 嵌套 ≤3 / 圈复杂度 ≤10；复杂度/嵌套诊断附带 Top 3 `hotspots`；非测试文件新增 300 净代码行模块体量 warning；
+   - `BCS004`：剔除 Python `self`/`cls` 与裸 `*`，区分位置参数（≤4）、keyword-only（≤6）与 DI 构造器 `__init__`（≤8）；
+   - `BCS006`：纯标量链式赋值降为 warning，可变容器/调用结果链式赋值保持硬错误；
+   - `BCS011`：放行 Composition Root（`main`/`run_cli`/`__main__`）与已注入 `env` 参数的回退读取；
+   - `BCS013`：显式失败/缺失哨兵（`False`/`false`/`None`/`null`/`undefined`）不再误判为伪造成功，新增 `{"ok": True}` / `{ok: true}` 检测。
+3. **首批 5 条“反坏品味”结构规则落地**：
+   - `BCS006`：嵌套三元穿透括号（补漏 `a if x else (b if y else c)`）；
+   - `BCS011`：Python `nonlocal` 跨闭包改状态报硬错误，`global` 报 warning；
+   - `BCS004`：多出参可变容器函数（无返回值且原地修改 ≥2 个参数容器）报 warning；
+   - `BCS013`：宽泛 `except:` / `except Exception:` / `catch (...)` 中仅写裸 `return`/`continue`/`break` 静默丢错升格为硬错误；
+   - `BCS014`：Python 未被跨文件导入的私有 `_fn` 与 JS/TS ES Module 未导出的孤儿函数/`const` 报死代码 warning（`click`/`httpx`/`rich` 上 0 误报）。
+4. **4 大设计力学与可操作处方（`prescription`）**：
+   - 抽象缺失：Data Clump（≥3 函数共享 ≥3 业务参数）、Repeated Dispatch（重复 ≥4 分支字符串 `if/elif`）；
+   - 错误抽象：Tramp Data（≥5 参数且过半直传单一调用）、Thin Single-Caller Wrapper（单调用 1:1 透传瘦包装）、Adjacent Same-Type Positional Params（相邻同基础类型位置参数）；
+   - 显式架构分层：`bits.toml` 支持 `[[layers]]`（`paths` / `pure = true` / `forbid_imports` / `allow_imports`），跨层导入或纯层触 IO 报 `BCS017` 硬错误；
+   - 可执行处方：每条设计力学与架构违例均输出 `prescription` 字段，直接指明目标重构形状。
+5. **Agent-in-the-loop 输出与防漂移**：新增 `--format compact`、`--format markdown`、`--violations-only`、`--json`，默认 `text` 去重 `hint` 并将 `violation` 置底聚合；`bits.toml` 支持 `min_version`；`--baseline` 提示过期基线条目并提供 `bits style baseline --prune`。

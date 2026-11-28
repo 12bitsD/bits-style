@@ -18,7 +18,7 @@
 已有指令、CI 和 baseline 不会被覆盖。没有安装 `bits` 时会先提示安装：
 
 ```bash
-cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked
+cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.0 --locked
 ```
 
 ## 日常工作流

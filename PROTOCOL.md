@@ -8,12 +8,14 @@
 bits style fix [paths...] [options]
 bits style check [paths...] [options]
 bits style report [paths...] [options]
+bits style baseline --prune <file> [paths...] [options]
 bits bench [--manifest benchmarks/manifest.toml] [--corpus corpus/bad] [--offline] [--strict]
 ```
 
 - `fix` 只执行确定不改变程序语义的修复，然后重新扫描。修复必须幂等。
 - `check` 只读扫描；无违规返回 0，有违规返回 1。
 - `report` 使用与 `check` 相同的扫描结果并输出结构化报告；报告成功生成时返回 0，扫描未完成返回 2。
+- `baseline --prune <file>` 扫描目标路径并从既有基线 JSON 中移除已修复或文件已删除的过期条目，保持债务清单单调收敛。
 - `bench` 运行正负样本基准：正样本检查 `before` 召回与 `after` 消除；负样本拉取锁定 commit 的开源标杆库，只统计 L1 结构与语义规则（排除 `BCS001/002/007/008/009` 语言格式偏好）。正样本未全过或 `--strict` 下负样本存在硬错误时返回 1。
 
 ## 2. 参数
@@ -24,11 +26,14 @@ bits bench [--manifest benchmarks/manifest.toml] [--corpus corpus/bad] [--offlin
 --staged              只扫描暂存区中的文件
 --diff                只报告新增/修改行相关的违规
 --commit <commit>     指定 diff 的比较基线；必须搭配 --diff
---format <format>     text、json、jsonl、sarif
+--format <format>     text、compact、json、jsonl、sarif、markdown
+--json                `--format json` 的便捷别名（与 `--format` 互斥）
+--violations-only     只输出 severity=violation 的阻断项与 scan_errors（摘要仍保留完整 warning 计数）
+--strict-unsupported  目录扫描或 --diff 遇到未支持源码后缀时以退出码 2 失败（默认静默跳过并计入 unsupported_files）
 --output <file>       写入文件；未指定时写 stdout
 --jobs <n>            并行扫描数量；默认使用 CPU 并行度（上限 8），不改变输出顺序
 --config <file>       指定扫描配置
---baseline <file>     使用既有 JSON 报告作为存量违规基线
+--baseline <file>     使用既有 JSON 报告作为存量违规基线（同时统计过期条目 stale_baseline_entries）
 --no-ignore           不读取 .gitignore，但仍排除 .git 和扫描器自身产物
 --include-passed      report 中包含通过的检查项
 ```
@@ -71,21 +76,38 @@ bits style check --diff --commit 61a5793 src
 - `category`：可选，优雅性维度分类：`level-purity`、`control-flow`、`state-gain`、`symmetry`、`role`。
 - `obligation`：可选，处理义务：`refactor`（必须重构）、`prove_minimalism`（建议重构或登记稀缺举证）、`critic_review`（已附 `bits:prove`，待独立 Critic 核验）、`ratchet_improving`（diff 棘轮命中，指标较基线下降）。
 - `improving`：可选布尔值，为 `true` 时表示该诊断命中了 diff `improving` 棘轮。
-- `explanation`：可选的说明文本，来自 `bits:prove` 或兼容的 `bits:explain(BCS003)`；warning 缺失说明时文本报告输出温和提示，不强制要求补注释。
-- `unsupported`：未实现适配的文件列表。`report` 返回 0 并展示 `status = unsupported`；`check` 返回 2，防止将未覆盖误认为通过。
-- `summary.warnings`、`summary.unsupported_files`、`summary.proves` 和 `summary.improving` 分别统计 warning、unsupported 文件、处于 `critic_review` 的举证数和命中棘轮的诊断数。
+- `hotspots`：可选字符串数组，为 `BCS003` 嵌套/圈复杂度/认知复杂度诊断附带 Top 热点行号与权重（如 `["if@L219(+4)", "for@L224(+3)"]`）。
+- `prescription`：可选字符串，为设计力学和核心架构违规提供面向重构的目标结构处方（如“收成 frozen dataclass”、“加 `*` 强制 keyword-only”、“内联单调用瘦包装”或“移出纯层”），在 `text` / `compact` / `markdown` / `json` 中同步输出。
+- `explanation`：可选的说明文本，来自 `bits:prove` 或兼容的 `bits:explain(BCS003)`；文本报告按规则去重仅在末尾输出一次温和提示，不逐条刷屏，也不强制要求补注释。
+- `unsupported`：未实现适配的文件列表。目录扫描和 `--diff` 默认跳过这些后缀（仍如实写入 `unsupported` 与 `summary.unsupported_files`，但 `check` 退出码为 0）；当传入 `--strict-unsupported` 或命令行显式点名单个未支持文件时，`status = unsupported` 且 `check` 返回 2。
+- `allows`：本次扫描中被激活的 `bits:allow` 豁免列表（diff 模式下仅限新增/修改行），供 `--format markdown` 生成 PR 审查清单。
+- `summary.warnings`、`summary.unsupported_files`、`summary.proves`、`summary.improving` 和 `summary.stale_baseline_entries` 分别统计 warning、跳过/未支持文件、处于 `critic_review` 的举证数、命中棘轮的诊断数以及未命中的过期基线条目数。
 - `summary.functions_checked` 与 `summary.functions_with_warnings` 提供函数级分母；`bits bench` 据此计算 Warning 误报函数占比，并输出 `cognitive_v1` 认知复杂度的 P50/P90/P95/P99/max 分布。
-- `BCS003` 当前保留圈复杂度 >10 与嵌套 >3 硬错误以兼容存量 baseline，同时对 `cognitive_v1 > 15` 输出高置信 shadow warning，待跨语言基准分布校准后再定硬门禁。
+- `BCS003` 当前保留圈复杂度 >10 与嵌套 >3 硬错误以兼容存量 baseline，同时对 `cognitive_v1 > 15` 输出高置信 shadow warning，并对非测试文件 >300 净代码行输出文件体量 warning。
 
 ## 3.2 配置文件
 
 ```toml
 # bits.toml
+min_version = "0.6.0"
 exclude = ["**/generated/**", "vendor/**"]
 io_sources = ["Client.request", "db.query", "my_io::*"]
+
+[[layers]]
+name = "domain"
+paths = ["src/*/domain/**"]
+pure = true
+forbid_imports = ["infra", "ui", "httpx"]
+
+[[layers]]
+name = "infra"
+paths = ["src/*/infra/**"]
+forbid_imports = ["ui"]
 ```
 
-`io_sources` 为追加的 IO 调用 glob 模式，在内置 IO 源头（`open`、`os.*`、`subprocess.*`、`httpx.*`、`fetch`、`std::fs::*` 等）之上生效，供 `BCS017`（`bits:spec(pure)` 污点传播）判定直接 IO 源。
+- `min_version`（可选）：最低扫描器版本（`MAJOR.MINOR.PATCH`），防止本地与 CI 版本静默漂移；当前二进制版本低于该值时以退出码 2 终止并给出升级命令。
+- `io_sources` 为追加的 IO 调用 glob 模式，在内置 IO 源头（`open`、`os.*`、`subprocess.*`、`httpx.*`、`fetch`、`std::fs::*` 等）之上生效，供 `BCS017`（`bits:spec(pure)` 污点传播）判定直接 IO 源。
+- `[[layers]]`（可选）：声明模块分层角色。`pure = true` 自动让该层所有函数受 `BCS017` IO 污点约束；`forbid_imports` / `allow_imports` 按层名或依赖 glob 强校验跨层导入边界，违者报 `BCS017` 硬错误。
 
 ## 4. 扫描流程
 
@@ -136,20 +158,24 @@ bits style check . --baseline bits-baseline.json
 
 baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规，行列变化不会单独产生新违规。每条基线记录只消费一次，重复违规按记录数量匹配，新增的同指纹违规不会被已有的一条记录吞掉。新文件不参与 baseline，必须全量通过。`summary.suppressed_violations` 记录被隐藏的存量违规数量。
 
-## 7. 文本输出
+## 7. 文本、Compact 与 Markdown 输出
 
 ```text
 <file>:<line>:<column>: <rule_id>: <message> actual=<actual> expected=<expected> fixable=<yes|no>
 ```
 
-摘要包含扫描文件数、违规数、可修复数、baseline 抑制数、扫描错误数和最终结果。机器格式下，人类可读日志只能写入 stderr。
+- `text`：同时存在 warning 与 violation 时，先输出 warning，再在 `Violations (blocking):` 下将所有 violation 置底集中打印；相同的 `bits:prove` 提示按规则去重，仅在末尾输出一次。
+- `compact`：面向 Agent / CI 的单行精简格式（`[W]` / `[V]`），带 `--- violations ---` 置底分组，无重复 hint。
+- `markdown`：面向 PR / CI Summary 的审查清单，聚合本次 `Violations`、`bits:prove` Review Checklist 与 `bits:allow` Exemptions。
+
+摘要包含扫描文件数、违规数、可修复数、baseline 抑制数、过期基线条目数（大于 0 时）、跳过/未支持文件数、扫描错误数和最终结果。机器格式下，人类可读日志只能写入 stderr。
 
 ## 8. JSON 报告
 
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.5.0" },
+  "tool": { "name": "bits", "version": "0.6.0" },
   "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {
@@ -222,6 +248,6 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 |---|---|
 | 0 | 扫描完成且无违规；或 report 成功生成报告 |
 | 1 | 扫描完成，存在至少一条违规 |
-| 2 | 扫描未完成，包括参数、配置、baseline、文件读取、解析错误或存在 unsupported 文件 |
+| 2 | 扫描未完成，包括参数、配置（含 `min_version` 不满足）、baseline、文件读取、解析错误，或显式点名单文件 / `--strict-unsupported` 下存在 unsupported 文件 |
 
 `check` 和 `report` 必须使用同一扫描结果；`fix` 必须以修复后的重新扫描结果作为最终输出。

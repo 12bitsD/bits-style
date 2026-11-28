@@ -12,17 +12,17 @@ AI 生成代码很快，但默认容易多写：服务端明明会报错，本�
 官方 formatter 和编译器能管好格式和语法，但管不了多余的逻辑。如果只拿“函数不超过 48 行”卡 CI，Agent 就会靠拆碎函数、写豁免注释来过关，代码反而更难读。
 
 Bits 把检查分成两部分：
-- 能客观判断的结构问题，由 `bits` 扫描器直接检查，比如嵌套太深、在 `assert` 里赋值、声明了纯函数却调用网络请求。
-- 需要结合上下文判断的设计问题，比如这层校验是不是多余、是不是在重复解析下游错误，交给配套的 [Agent Skill](skills/bits-style/SKILL.md) 按清单复核，不靠正则硬猜。
+- 能客观判断的结构与设计力学问题，由 `bits` 扫描器直接检查，比如嵌套太深、在 `assert` 里赋值、`nonlocal` 跨闭包改状态、宽异常静默吞错、透传胶水/数据团块/多出参容器，以及声明了纯函数或纯分层却调用 IO。
+- 需要结合上下文判断的语义品味问题，比如这层校验是不是多余、单函数是不是混了多个故障域，交给配套的 [Agent Skill](skills/bits-style/SKILL.md) 按清单复核，不靠正则硬猜。
 
-规范只约束代码本身，不涉及架构分层、设计模式或评审流程。
+规范默认只约束代码本身，不强推特定设计模式或评审流程；需要约束模块边界时，可在 `bits.toml` 中按需声明 `[[layers]]` 分层与纯度契约。
 
 ## 快速上手
 
 安装需要本机有 [Rust 工具链（Cargo）](https://rustup.rs/)，被扫描的项目不限语言。只阅读规范或使用 Skill 时，不需要安装扫描器。
 
 ```bash
-cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked
+cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.0 --locked
 ```
 
 常用命令：
@@ -30,7 +30,10 @@ cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked
 ```bash
 bits style check src                 # 检查目录，有硬错误时返回 1
 bits style check --diff              # 只检查本次改动（默认对比 HEAD）
-bits style report src --format json  # 输出完整 JSON 报告（含警告）
+bits style check src --format compact --violations-only  # Agent/CI 精简阻断视图
+bits style report src --json         # 输出完整 JSON 报告（含警告）
+bits style report --diff --format markdown               # PR 审查摘要（含 prove/allow 清单）
+bits style baseline --prune bits-baseline.json .         # 清理过期基线条目
 bits style fix src                   # 只修缩进、行尾空白和末尾换行
 ```
 
@@ -53,12 +56,14 @@ def check_count(items):
     return count
 ```
 
-运行 `bits style check cli.py`，输出节选：
+运行 `bits style check cli.py`，输出节选（硬错误自动置底聚合，提示按规则去重）：
 
 ```text
 cli.py:2:5: BCS016: mutually exclusive branches repeat the same leading call ... severity=warning
-  hint: prefer refactoring; if unavoidable, register bits:prove(...) (budget: 1 per change)
+
+Violations (blocking):
 cli.py:13:5: BCS006: assertion condition must not contain explicit side effects ... severity=violation
+hint: prefer refactoring; if unavoidable, register bits:prove(BCS016[, test=name]): ...
 Result: FAIL
 ```
 
@@ -69,10 +74,12 @@ Result: FAIL
 - 未使用变量、未使用导入、类型错误：交给编译器、Ruff、Mypy、TSC、go vet。
 - Rust 的 `unwrap`、`expect`、`panic`：交给 Clippy 按项目需要开启。
 
-**2. `bits` 扫描器只查客观结构**
-- **硬错误**（返回 1，不能写注释豁免）：控制流嵌套超过 3 层、圈复杂度超过 10、嵌套三元、双重否定、空 `catch`、`assert` 条件里带 `:=`/`=`/`++`、可变全局变量、给参数重新赋值、模块依赖环，以及标了 `bits:spec(pure)` 的函数调用 IO。
-- **警告**（不影响退出码，也不要求补注释）：函数超过 48 行或局部变量超过 10 个、参数超过 4 个、命名不规范、可以合并的双层 `if`、相邻分支内容完全一样、穷尽分支开头重复同一个调用、Go 的 `context.Context` 没放在第一个参数或存进了 struct。
-- 同时计算 Sonar 的**认知复杂度**：嵌套越深扣分越多，扁平的 `switch/match` 扣分少。在 9 个开源库、10,658 个函数上实测，超过 15 分的函数占 1.67%，目前只作为参考警告。
+**2. `bits` 扫描器查客观结构与设计力学**
+- **硬错误**（返回 1，不能写 `bits:prove` 豁免）：超 80 列行宽（自动豁免多行字符串/模板/docstring 与 URL）、控制流嵌套超过 3 层、圈复杂度超过 10（均附带 `hotspots` 热点行号）、嵌套三元（含括号包裹）、双重否定、空 `catch` 或宽异常（`except Exception:` 等）仅写裸 `return`/`continue`/`break`、`assert` 条件里带 `:=`/`=`/`++`、可变容器/调用链式赋值、可变全局变量、Python `nonlocal` 跨闭包改状态、给参数重新赋值、模块依赖环，以及 `bits:spec(pure)` / `[[layers]]` 纯层触 IO 或跨层禁导。
+- **警告与设计力学**（不影响退出码，附带可执行重构处方 `prescription`）：
+  - **规模与卫生**：函数超过 48 行或局部变量超过 10 个、非测试文件净代码超过 300 行、参数超过 4 个（Python 自动剔除 `self`/`cls`/裸 `*` 并区分 keyword-only / DI 构造器）、纯标量链式赋值、非入口读环境变量（自动放行 `main`/`run_cli`/`__main__` 及 `env` 注入回退）、未使用的私有函数/常量、命名不规范、可折叠双层 `if`、相邻同体分支、穷尽分支头部重复调用、Go `context.Context` 顺序/存 struct。
+  - **设计力学**：多出参可变容器函数、跨函数数据团块（Data Clump）、透传胶水（Tramp Data）、相邻同基础类型位置参数、重复字符串 `if/elif` 分发、单调用瘦包装（Thin Wrapper）。
+- 同时计算 Sonar 的**认知复杂度**：嵌套越深扣分越多，扁平的 `switch/match` 扣分少。在 9 个开源库、10,658 个函数上实测，超过 15 分的函数占 1.67%，目前作为带热点的参考警告。
 
 **3. 设计判断交给 Agent Skill 或人复核**
 只看本次改动的函数和扫描器报了警告的地方，问四个问题：
@@ -114,18 +121,23 @@ Result: FAIL
 接入 Bits 不需要一次性重构整个仓库：
 
 ```bash
-bits style check --diff --commit HEAD~3
+bits style check --diff --commit HEAD~3 --format compact
 bits style report . --output bits-baseline.json
 bits style check . --baseline bits-baseline.json
+bits style baseline --prune bits-baseline.json .
 ```
 
 - `--diff` 只报告新增或修改行相关的问题，同时会按需读取关联的未改动文件来检查依赖环。
-- `--baseline` 隐藏已有的存量问题；新文件和新增问题仍会被拦下。
+- `--baseline` 隐藏已有的存量问题，并统计已修复或文件已删除的过期条目（`stale_baseline_entries`）；新文件和新增问题仍会被拦下。用 `bits style baseline --prune` 可一键清理死条目，保持债务清单收敛。
 - `--diff` 模式下，如果一个老函数的嵌套或复杂度比改动前下降了，即使仍然超标也会降级为警告（标记为 `improving`）；新函数和越改越复杂的函数仍按硬错误处理。
+- 一键初始化（自动生成 `bits.toml`、`AGENTS.md`、CI workflow 和初始 `bits-baseline.json`，不覆盖已有文件）：
+  ```bash
+  ./skills/bits-style/scripts/bootstrap.sh /path/to/your-project origin/main
+  ```
 
 ## 扫描与配置
 
-当前支持：C、C++、Python、JavaScript、TypeScript、TSX、Rust（部分规则）、Go（部分规则）。遇到尚未支持的源码文件（如 `.java`、`.zig`、`.rb`），会列在报告的 `unsupported` 字段中，`check` 返回 2，不会当作检查通过。
+当前支持：C、C++、Python、JavaScript、TypeScript、TSX、Rust（部分规则）、Go（部分规则）。目录扫描和 `--diff` 遇到尚未支持的源码文件（如 `.java`、`.kt`、`.sh`）会默认静默跳过并如实记录在报告的 `unsupported` 字段中（不阻断多语言仓库）；传 `--strict-unsupported` 或命令行直接点名单个未支持文件时，`check` 返回 2。
 
 扫描默认遵循 `.gitignore`，跳过 `.git`、依赖目录、构建目录和常见生成文件。扫描只解析语法树，不执行项目代码，也不访问网络。
 
@@ -133,22 +145,36 @@ bits style check . --baseline bits-baseline.json
 bits style check . --all                     # 全量扫描
 bits style check . --changed                 # 扫描工作区改动的文件（按整文件检查）
 bits style check . --staged                  # 扫描已暂存的文件（按整文件检查）
-bits style report src --format sarif         # 支持 text / json / jsonl / sarif
+bits style check . --format compact          # Agent/CI 精简单行输出（violation 置底聚合）
+bits style report src --format sarif         # 支持 text / compact / json / jsonl / sarif / markdown
 bits style report src --jobs 8 --include-passed
 ```
 
 配置文件 `bits.toml`（用 `--config bits.toml` 指定）：
 
 ```toml
+min_version = "0.6.0"                         # 防止本地与 CI 扫描器版本静默漂移
 exclude = ["**/generated/**", "vendor/**"]
 io_sources = ["Client.request", "db.query"]  # 补充项目自己的 IO 调用，供 bits:spec(pure) 检查
+
+# 可选：声明架构分层与纯层契约（跨层禁导或纯层触 IO 报 BCS017 硬错误）
+[[layers]]
+name = "domain"
+paths = ["src/*/domain/**"]
+pure = true
+forbid_imports = ["infra", "ui", "httpx"]
+
+[[layers]]
+name = "infra"
+paths = ["src/*/infra/**"]
+forbid_imports = ["ui"]
 ```
 
 | 退出码 | 含义 |
 |---|---|
-| `0` | 无硬错误；或 `report` 成功生成报告 |
+| `0` | 无硬错误；或 `report` / `baseline --prune` 成功完成 |
 | `1` | 存在硬错误（`severity = violation`） |
-| `2` | 参数、配置、读取或解析错误，或存在未支持的源码文件 |
+| `2` | 参数、配置（含 `min_version` 不满足）、读取或解析错误，或显式点名/`--strict-unsupported` 遇到未支持的源码文件 |
 
 性能与自动修复：
 - 默认按 CPU 核数并行（上限 8），输出顺序固定，串行与并行结果一致。详见 [PERFORMANCE.md](docs/PERFORMANCE.md)。
@@ -167,19 +193,20 @@ io_sources = ["Client.request", "db.query"]  # 补充项目自己的 IO 调用�
 ## 文档与开发
 
 - [STYLE.md](STYLE.md)：编码规范与评审清单（Style V0.4）
-- [PROTOCOL.md](PROTOCOL.md)：扫描输出与豁免协议（Protocol V0.4，当前扫描器 v0.5.0）
+- [PROTOCOL.md](PROTOCOL.md)：扫描输出与豁免协议（Protocol V0.4，当前扫描器 v0.6.0）
 - [docs/agent-integration.md](docs/agent-integration.md)：在项目与 CI 中接入 Agent Skill
 - [docs/language-support.md](docs/language-support.md)：逐语言、逐规则支持矩阵
 - [docs/profiles.md](docs/profiles.md)、[profiles/go.md](profiles/go.md)、[docs/rust-support.md](docs/rust-support.md)：各语言配置与边界
 - [schemas/report.schema.json](schemas/report.schema.json)：JSON 报告 Schema
 
-本地构建与验证（当前共 127 个测试）：
+本地构建与验证（当前共 141 个测试）：
 
 ```bash
 cargo build --release
 cargo fmt --check
 cargo clippy --all-targets --locked -- -D warnings
 cargo test --locked
+./target/release/bits style check src --config bits.toml --format compact
 ```
 
 ## License

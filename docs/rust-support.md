@@ -19,7 +19,9 @@ Rust 通过 Tree-sitter 接入，当前为 partial 支持，不代表完整 Rust
 ## 边界
 
 - 不宣称完整生命周期、借用、类型推断、宏展开、trait resolution 或跨 crate 语义分析。
-- `static mut` 是明确的全局可变状态；普通 `const` 和不可变 `static` 不误报。
-- `match_arm` 的缩进交给 rustfmt，不使用简单的列偏移规则，避免 `let ... = match ...` 误报。
-- 已知待修项（V0.4 自检发现）：元组解构 `let (a, b) = ...` 会被 `BCS009` 误判为函数名与括号分离；多行闭包/let-else 的大括号位置由 rustfmt 决定，`BCS007` 在 Rust 上仍会误报。
-- 未适配语言仍进入 `unsupported`，不会与 Rust 的 partial coverage 混淆。
+- `static mut` 是明确的全局可变状态；普通 `const` 和不可变 `static`（含函数内 `static REGEX: OnceLock<...>`）均允许 `UPPER_SNAKE_CASE` 且不误报。
+- 大括号风格（`BCS007`）与 `match_arm`/case 缩进（`BCS008`）由 `rustfmt` 与 Rust 语法强制保障，在 Rust 上标为 `not_applicable`。
+- 元组解构与 Rust 关键字（`let (a, b)`、`pub (crate)`、`const`、`static`、`fn`、`move`、`where`、`loop`、`unsafe`、`extern`、`ref`、`mut`、`type`）在 `BCS009` 中均已白名单放行。
+- Rust 行级注释（`// bits:allow(...)`、`// bits:prove(...)`、`// bits:spec(pure)`）和块注释（`/* ... */`）均正常识别。
+- `bits-style` 自身源码库（`src/`）已在 `bits.toml`（含 `[[layers]]` 分层契约）下达成 `0 violations, 0 warnings`。
+- 未适配语言在目录扫描和 `--diff` 下默认静默跳过并计入 `Skipped (unsupported)`，仅在 `--strict-unsupported` 或显式传单文件时失败。
