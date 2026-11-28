@@ -17,6 +17,9 @@ jobs:
           fetch-depth: 0
       - uses: dtolnay/rust-toolchain@stable
       - name: Install bits
-        run: cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked
+        run: cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.0 --locked
+      - name: Publish PR review summary
+        if: always()
+        run: bits style report --diff --commit origin/main --config bits.toml --format markdown >> "$GITHUB_STEP_SUMMARY"
       - name: Check changed code
-        run: bits style check --diff --commit origin/main
+        run: bits style check --diff --commit origin/main --config bits.toml --format compact

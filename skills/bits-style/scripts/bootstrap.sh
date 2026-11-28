@@ -6,7 +6,7 @@ BASE_REVISION="${2:-origin/main}"
 SKILL_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 if ! command -v bits >/dev/null 2>&1; then
-  echo "bits is required. Install it with: cargo install --git https://github.com/12bitsD/bits-style --tag v0.5.0 --locked" >&2
+  echo "bits is required. Install it with: cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.0 --locked" >&2
   exit 2
 fi
 
@@ -31,4 +31,5 @@ if [ ! -f bits-baseline.json ]; then
 fi
 
 printf 'Bits style initialized. Baseline revision for future checks: %s\n' "$BASE_REVISION"
-printf 'Review: bits style check --diff --commit %s\n' "$BASE_REVISION"
+printf 'Review: bits style check --diff --commit %s --config bits.toml --format compact\n' "$BASE_REVISION"
+printf 'Prune stale baseline entries later: bits style baseline --prune bits-baseline.json .\n'

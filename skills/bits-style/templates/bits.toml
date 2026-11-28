@@ -1,4 +1,5 @@
-# Bits’s Coding Style v0.5.0
+# Bits’s Coding Style v0.6.0
+min_version = "0.6.0"
 exclude = [
   "**/generated/**",
   "**/vendor/**",
@@ -7,5 +8,17 @@ exclude = [
   "**/dist/**",
   "**/build/**",
 ]
-# Additional IO call globs for bits:spec(pure) taint checks (BCS017):
+# Additional IO call globs for bits:spec(pure) and pure layer taint checks (BCS017):
 # io_sources = ["Client.request", "db.query"]
+
+# Optional architectural layer contracts (BCS017 hard violations):
+# [[layers]]
+# name = "domain"
+# paths = ["src/*/domain/**"]
+# pure = true
+# forbid_imports = ["infra", "ui", "httpx"]
+#
+# [[layers]]
+# name = "infra"
+# paths = ["src/*/infra/**"]
+# forbid_imports = ["ui"]
