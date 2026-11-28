@@ -1,5 +1,5 @@
-# Bits’s Coding Style v0.6.0
-min_version = "0.6.0"
+# Bits’s Coding Style v0.6.1
+min_version = "0.6.1"
 exclude = [
   "**/generated/**",
   "**/vendor/**",

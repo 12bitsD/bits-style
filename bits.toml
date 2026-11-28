@@ -1,4 +1,4 @@
-min_version = "0.6.0"
+min_version = "0.6.1"
 
 [[layers]]
 name = "model"

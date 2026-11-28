@@ -1,6 +1,6 @@
 # Bits’s Coding Style
 
-Version: v0.6.0.
+Version: v0.6.1.
 
 Canonical documents: `STYLE.md` and `PROTOCOL.md` from https://github.com/12bitsD/bits-style.
 

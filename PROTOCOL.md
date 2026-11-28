@@ -89,7 +89,7 @@ bits style check --diff --commit 61a5793 src
 
 ```toml
 # bits.toml
-min_version = "0.6.0"
+min_version = "0.6.1"
 exclude = ["**/generated/**", "vendor/**"]
 io_sources = ["Client.request", "db.query", "my_io::*"]
 
@@ -175,7 +175,7 @@ baseline 只隐藏规则号、文件、消息和实际值完全匹配的违规�
 ```json
 {
   "protocol": "bits.style.scan/v2",
-  "tool": { "name": "bits", "version": "0.6.0" },
+  "tool": { "name": "bits", "version": "0.6.1" },
   "style": { "name": "Bits’s Coding Style", "version": "0.4" },
   "status": "warning",
   "coverage": {

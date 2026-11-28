@@ -106,7 +106,9 @@ fn dispatch_expression_kind(analyzer: &mut Analyzer<'_>, node: Node) {
         "assert_statement" if has_assert_side_effect(node) => {
             push_assert_side_effect(analyzer, node);
         }
-        "binary_expression" => analyze_binary_operator(analyzer, node),
+        "binary_expression" if analyzer.language != Language::Go => {
+            analyze_binary_operator(analyzer, node);
+        }
         "assignment_expression"
             if has_chained_right(node, "assignment_expression") =>
         {

@@ -701,3 +701,13 @@ fn rust_dogfood_fixes_eliminate_brace_let_tuple_and_local_static_false_positives
         "unexpected Rust false positives: {results:#?}"
     );
 }
+
+#[test]
+fn go_gofmt_tight_precedence_operators_do_not_trigger_bcs009() {
+    let source = "package main\n\nfunc calc(a, b, c int) int {\n\tsum := a + b*c\n\tmask := sum&0xff\n\treturn sum + mask\n}\n";
+    let results = scan("go", source);
+    assert!(
+        !results.iter().any(|r| r["rule_id"] == "BCS009"),
+        "gofmt operator spacing must not trigger BCS009: {results:#?}"
+    );
+}

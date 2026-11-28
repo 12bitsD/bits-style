@@ -1,6 +1,6 @@
 ---
 name: bits-style
-description: Apply Bits’s Coding Style (v0.6.0) safely in any repository. Use when adopting the style, configuring architecture layers, reviewing or refactoring changed code with hotspots and prescriptions, maintaining or pruning a baseline, enabling diff-only or CI checks, or auditing bits:allow/bits:prove without turning the checker into a full-repo mechanical rewrite.
+description: Apply Bits’s Coding Style (v0.6.1) safely in any repository. Use when adopting the style, configuring architecture layers, reviewing or refactoring changed code with hotspots and prescriptions, maintaining or pruning a baseline, enabling diff-only or CI checks, or auditing bits:allow/bits:prove without turning the checker into a full-repo mechanical rewrite.
 ---
 
 # Bits’s Coding Style
@@ -24,7 +24,7 @@ Canonical references:
 
 Resolve these before acting:
 
-- `bits` executable and its version. The current integration version is `v0.6.0` (pin `min_version = "0.6.0"` in `bits.toml` to prevent local/CI drift).
+- `bits` executable and its version. The current integration version is `v0.6.1` (pin `min_version = "0.6.1"` in `bits.toml` to prevent local/CI drift).
 - Repository root and Git comparison revision, normally `origin/main`.
 - Whether this is first adoption, incremental work, or CI hard-gate adoption.
 - Existing language formatters, type checkers, and test commands.
@@ -35,7 +35,7 @@ Resolve these before acting:
 
 If `bits.toml` does not exist, copy `templates/bits.toml` and adjust:
 
-- `min_version = "0.6.0"` to prevent local/CI scanner drift.
+- `min_version = "0.6.1"` to prevent local/CI scanner drift.
 - `exclude` for generated/vendor directories.
 - `io_sources` for project-specific IO entrypoints (used by `BCS017`).
 - `[[layers]]` (optional, high leverage) when the repo has clear architectural boundaries — e.g. mark `domain` as `pure = true` with `forbid_imports = ["infra", "ui"]` so cross-layer coupling and IO leaks become hard errors automatically.

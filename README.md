@@ -22,7 +22,7 @@ Bits 把检查分成两部分：
 安装需要本机有 [Rust 工具链（Cargo）](https://rustup.rs/)，被扫描的项目不限语言。只阅读规范或使用 Skill 时，不需要安装扫描器。
 
 ```bash
-cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.0 --locked
+cargo install --git https://github.com/12bitsD/bits-style --tag v0.6.1 --locked
 ```
 
 常用命令：
@@ -153,7 +153,7 @@ bits style report src --jobs 8 --include-passed
 配置文件 `bits.toml`（用 `--config bits.toml` 指定）：
 
 ```toml
-min_version = "0.6.0"                         # 防止本地与 CI 扫描器版本静默漂移
+min_version = "0.6.1"                         # 防止本地与 CI 扫描器版本静默漂移
 exclude = ["**/generated/**", "vendor/**"]
 io_sources = ["Client.request", "db.query"]  # 补充项目自己的 IO 调用，供 bits:spec(pure) 检查
 
@@ -193,13 +193,13 @@ forbid_imports = ["ui"]
 ## 文档与开发
 
 - [STYLE.md](STYLE.md)：编码规范与评审清单（Style V0.4）
-- [PROTOCOL.md](PROTOCOL.md)：扫描输出与豁免协议（Protocol V0.4，当前扫描器 v0.6.0）
+- [PROTOCOL.md](PROTOCOL.md)：扫描输出与豁免协议（Protocol V0.4，当前扫描器 v0.6.1）
 - [docs/agent-integration.md](docs/agent-integration.md)：在项目与 CI 中接入 Agent Skill
 - [docs/language-support.md](docs/language-support.md)：逐语言、逐规则支持矩阵
 - [docs/profiles.md](docs/profiles.md)、[profiles/go.md](profiles/go.md)、[docs/rust-support.md](docs/rust-support.md)：各语言配置与边界
 - [schemas/report.schema.json](schemas/report.schema.json)：JSON 报告 Schema
 
-本地构建与验证（当前共 141 个测试）：
+本地构建与验证（当前共 142 个测试）：
 
 ```bash
 cargo build --release
