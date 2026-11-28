@@ -1,7 +1,9 @@
 pub mod analyze;
 pub mod bench;
+pub mod design;
 pub mod discovery;
 pub mod language;
+pub mod layers;
 pub mod model;
 pub mod report;
 pub mod scanner;

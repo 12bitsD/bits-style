@@ -6,15 +6,22 @@ use serde_json::Value;
 pub const PROTOCOL_VERSION: &str = "bits.style.scan/v2";
 pub const STYLE_VERSION: &str = "0.4";
 pub const RULE_IDS: [&str; 17] = [
-    "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007", "BCS008", "BCS009",
-    "BCS010", "BCS011", "BCS012", "BCS013", "BCS014", "BCS015", "BCS016", "BCS017",
+    "BCS001", "BCS002", "BCS003", "BCS004", "BCS005", "BCS006", "BCS007",
+    "BCS008", "BCS009", "BCS010", "BCS011", "BCS012", "BCS013", "BCS014",
+    "BCS015", "BCS016", "BCS017",
 ];
+
+pub fn is_format_rule(rule: &str) -> bool {
+    matches!(rule, "BCS001" | "BCS002" | "BCS007" | "BCS008" | "BCS009")
+}
 
 fn is_false(value: &bool) -> bool {
     !*value
 }
 
-#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(
+    Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, PartialOrd, Ord,
+)]
 pub struct Position {
     pub line: usize,
     pub column: usize,
@@ -41,6 +48,14 @@ impl Range {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct AllowAnnotation {
+    pub rule_id: String,
+    pub file: String,
+    pub line: usize,
+    pub reason: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Violation {
     pub rule_id: String,
@@ -62,6 +77,10 @@ pub struct Violation {
     pub obligation: Option<String>,
     #[serde(default, skip_serializing_if = "is_false")]
     pub improving: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub hotspots: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub prescription: Option<String>,
 }
 
 fn default_severity() -> String {
@@ -74,6 +93,7 @@ fn default_confidence() -> String {
 
 impl Violation {
     #[allow(clippy::too_many_arguments)]
+    // bits:allow(BCS004): core diagnostic builder with fixed public signature
     pub fn new(
         rule_id: &str,
         file: &str,
@@ -98,6 +118,8 @@ impl Violation {
             category: None,
             obligation: None,
             improving: false,
+            hotspots: Vec::new(),
+            prescription: None,
         }
     }
 
@@ -150,6 +172,8 @@ pub struct Summary {
     pub functions_checked: usize,
     #[serde(default)]
     pub functions_with_warnings: usize,
+    #[serde(default)]
+    pub stale_baseline_entries: usize,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -193,14 +217,18 @@ pub struct Report {
     pub status: String,
     pub coverage: Coverage,
     pub results: Vec<Violation>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub passed: Vec<PassedCheck>,
     pub scan_errors: Vec<ScanError>,
     pub summary: Summary,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub fixes: Vec<FileFix>,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub unsupported: Vec<String>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub allows: Vec<AllowAnnotation>,
+    #[serde(skip)]
+    pub fail_on_unsupported: bool,
 }
 
 impl Default for Report {
@@ -229,10 +257,19 @@ impl Report {
             summary: Summary::default(),
             fixes: Vec::new(),
             unsupported: Vec::new(),
+            allows: Vec::new(),
+            fail_on_unsupported: false,
         }
     }
 
     pub fn finish(&mut self) {
+        self.sort_records();
+        self.recompute_summary();
+        self.recompute_status();
+        self.recompute_coverage();
+    }
+
+    fn sort_records(&mut self) {
         self.results.sort_by(|a, b| {
             (
                 &a.file,
@@ -249,29 +286,30 @@ impl Report {
         });
         self.scan_errors
             .sort_by(|a, b| (&a.file, &a.error).cmp(&(&b.file, &b.error)));
-        self.summary.violations = self
-            .results
-            .iter()
-            .filter(|v| v.severity == "violation")
-            .count();
-        self.summary.warnings = self
-            .results
-            .iter()
-            .filter(|v| v.severity == "warning")
-            .count();
-        self.summary.proves = self
-            .results
-            .iter()
-            .filter(|v| v.obligation.as_deref() == Some("critic_review"))
-            .count();
-        self.summary.improving = self.results.iter().filter(|v| v.improving).count();
-        self.summary.fixable_violations = self.results.iter().filter(|v| v.fixable).count();
+        self.allows.sort_by(|a, b| {
+            (&a.file, a.line, &a.rule_id).cmp(&(&b.file, b.line, &b.rule_id))
+        });
+    }
+
+    fn recompute_summary(&mut self) {
+        let count = |pred: fn(&Violation) -> bool| {
+            self.results.iter().filter(|v| pred(v)).count()
+        };
+        self.summary.violations = count(|v| v.severity == "violation");
+        self.summary.warnings = count(|v| v.severity == "warning");
+        self.summary.proves =
+            count(|v| v.obligation.as_deref() == Some("critic_review"));
+        self.summary.improving = count(|v| v.improving);
+        self.summary.fixable_violations = count(|v| v.fixable);
         self.summary.scan_errors = self.scan_errors.len();
+    }
+
+    fn recompute_status(&mut self) {
         self.status = if !self.scan_errors.is_empty() {
             "error"
         } else if self.summary.violations > 0 {
             "violation"
-        } else if !self.unsupported.is_empty() {
+        } else if self.fail_on_unsupported && !self.unsupported.is_empty() {
             "unsupported"
         } else if self.summary.warnings > 0 {
             "warning"
@@ -279,21 +317,21 @@ impl Report {
             "passed"
         }
         .to_owned();
-        self.coverage.partial = self
-            .coverage
-            .partial
-            .intersection(&self.coverage.executed)
-            .cloned()
-            .collect();
+    }
+
+    fn recompute_coverage(&mut self) {
+        let exec = &self.coverage.executed;
+        self.coverage.partial =
+            self.coverage.partial.intersection(exec).cloned().collect();
         self.coverage.not_applicable = self
             .coverage
             .not_applicable
-            .difference(&self.coverage.executed)
+            .difference(exec)
             .cloned()
             .collect();
         self.coverage.not_implemented = RULE_IDS
             .iter()
-            .filter(|id| !self.coverage.executed.contains(**id))
+            .filter(|id| !exec.contains(**id))
             .filter(|id| !self.coverage.not_applicable.contains(**id))
             .map(|id| (*id).to_owned())
             .collect();

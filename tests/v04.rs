@@ -56,11 +56,9 @@ fn chinese_business_comments_are_not_commented_code() {
 
     let actual = "// return value;\nfunction update() {\n  return 1;\n}\n";
     let results = scan("js", actual);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS014" && result["severity"] == "warning" })
-    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS014" && result["severity"] == "warning"
+    }));
 }
 
 #[test]
@@ -79,7 +77,7 @@ export function view(settings: AppSettings) {
 
 #[test]
 fn module_constants_and_local_const_have_distinct_naming() {
-    let source = "const MAX_COUNT = 2;\nexport const api = { value: 1 };\n\nfunction update() {\n  const localValue = 1;\n  return localValue + MAX_COUNT + api.value;\n}\n";
+    let source = "const MAX_COUNT = 2;\nexport const api = { value: 1 };\n\nexport function update() {\n  const localValue = 1;\n  return localValue + MAX_COUNT + api.value;\n}\n";
     assert_empty(&scan("js", source));
 }
 
@@ -114,59 +112,58 @@ fn worker_object_state_updates_are_not_parameter_reassignment() {
     let source = "function update(context) {\n  context.closed = true;\n  context.stdout += \"chunk\";\n  return context;\n}\n";
     assert_empty(&scan("js", source));
 
-    let reassignment = "function replace(context) {\n  context = {};\n  return context;\n}\n";
+    let reassignment =
+        "function replace(context) {\n  context = {};\n  return context;\n}\n";
     let results = scan("js", reassignment);
     assert!(results.iter().any(|result| result["rule_id"] == "BCS011"));
 }
 
 #[test]
-fn expected_failure_results_are_warnings_not_hard_errors() {
+fn expected_failure_sentinels_are_allowed_while_forged_success_warns() {
     let parse = "function parse(value) {\n  try {\n    return JSON.parse(value);\n  } catch (error) {\n    return null;\n  }\n}\n";
-    let results = scan("js", parse);
     assert!(
-        results
+        !scan("js", parse)
             .iter()
-            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
+            .any(|result| result["rule_id"] == "BCS013")
     );
 
     let guard = "function guard(value) {\n  try {\n    return validate(value);\n  } catch (error) {\n    return false;\n  }\n}\n";
-    let results = scan("js", guard);
     assert!(
-        results
+        !scan("js", guard)
             .iter()
-            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
+            .any(|result| result["rule_id"] == "BCS013")
     );
+
+    let forged = "function verify(value) {\n  try {\n    return validate(value);\n  } catch (error) {\n    return true;\n  }\n}\n";
+    let results = scan("js", forged);
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS013" && result["severity"] == "warning"
+    }));
 }
 
 #[test]
 fn empty_catch_remains_a_hard_error() {
     let source = "function parse(value) {\n  try {\n    return JSON.parse(value);\n  } catch (error) {\n  }\n}\n";
     let results = scan("js", source);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "violation" })
-    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS013" && result["severity"] == "violation"
+    }));
 }
 
 #[test]
 fn nesting_and_cyclomatic_complexity_are_hard_errors() {
     let nested = "function nested(value) {\n  if (value) {\n    for (const item of value) {\n      while (item) {\n        if (item) {\n          return 1;\n        }\n      }\n    }\n  }\n  return 0;\n}\n";
     let results = scan("js", nested);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS003" && result["severity"] == "violation" })
-    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS003" && result["severity"] == "violation"
+    }));
 
     let complex = format!(
         "function complex(value) {{\n{}  return value;\n}}\n",
         "  if (value) {\n    value += 1;\n  }\n".repeat(10)
     );
     let results = scan("js", &complex);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS003" && result["severity"] == "violation" })
-    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS003" && result["severity"] == "violation"
+    }));
 }

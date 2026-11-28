@@ -108,7 +108,8 @@ fn diff_no_ignore_still_excludes_dependency_and_build_directories() {
 
     fs::create_dir(root.join("target")).unwrap();
     fs::create_dir(root.join("node_modules")).unwrap();
-    fs::write(root.join("target/generated.py"), "target_counter = 0\n").unwrap();
+    fs::write(root.join("target/generated.py"), "target_counter = 0\n")
+        .unwrap();
     fs::write(
         root.join("node_modules/dependency.py"),
         "dependency_counter = 0\n",
@@ -139,11 +140,9 @@ fn unused_import_ignores_comments_and_strings() {
 fn catch_all_translation_is_allowed() {
     let source = "def parse(value):\n    try:\n        return int(value)\n    except Exception:\n        raise ValueError(\"invalid\")\n";
     let results = scan("py", source);
-    assert!(
-        results
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS013" && result["severity"] == "warning" })
-    );
+    assert!(results.iter().any(|result| {
+        result["rule_id"] == "BCS013" && result["severity"] == "warning"
+    }));
 }
 
 #[test]
@@ -234,7 +233,8 @@ fn diff_ignores_configured_mnemonic_prefixes() {
     let report = json(&output);
     assert_eq!(report["summary"]["files_scanned"], 1, "{report:#}");
     assert!(report["results"].as_array().unwrap().iter().any(|result| {
-        result["file"] == "sample.py" && result["actual"] == "global_counter = 0"
+        result["file"] == "sample.py"
+            && result["actual"] == "global_counter = 0"
     }));
 }
 
@@ -298,7 +298,8 @@ fn diff_combines_staged_and_unstaged_hunks_across_files() {
 fn diff_skips_pure_deletions() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
-    fs::write(root.join("sample.py"), "global_counter = 0\nvalue = 0\n").unwrap();
+    fs::write(root.join("sample.py"), "global_counter = 0\nvalue = 0\n")
+        .unwrap();
     init_diff_repo(root);
     fs::write(root.join("sample.py"), "value = 0\n").unwrap();
 
@@ -391,7 +392,8 @@ fn diff_bypasses_configured_textconv() {
     run_git(root, &["config", "diff.broken.textconv", "false"]);
     run_git(root, &["add", "."]);
     run_git(root, &["commit", "-qm", "initial"]);
-    fs::write(root.join("sample.py"), "value = 0\nglobal_counter = 0\n").unwrap();
+    fs::write(root.join("sample.py"), "value = 0\nglobal_counter = 0\n")
+        .unwrap();
 
     let output = bits(&[
         "style",
@@ -416,7 +418,8 @@ fn diff_does_not_walk_unrelated_directories_for_dependency_context() {
     let file = root.join("sample.ts");
     fs::write(&file, "export function value() {\n  return 1;\n}\n").unwrap();
     fs::create_dir(root.join("blocked")).unwrap();
-    fs::write(root.join("blocked/context.ts"), "export const value = 1;\n").unwrap();
+    fs::write(root.join("blocked/context.ts"), "export const value = 1;\n")
+        .unwrap();
     run_git(root, &["init", "-q"]);
     run_git(root, &["config", "user.email", "bits@example.invalid"]);
     run_git(root, &["config", "user.name", "Bits Tests"]);
@@ -586,12 +589,13 @@ fn bits_prove_marks_warnings_for_critic_and_rejects_hard_violations() {
     let nested = "// bits:prove(BCS003): cohesive; splitting risks state\nfunction bad(value) {\n  if (value) {\n    for (const item of value) {\n      while (item) {\n        if (item) {\n          return 1;\n        }\n      }\n    }\n  }\n  return 0;\n}\n";
     let results = scan("js", nested);
     assert!(results.iter().any(|r| {
-        r["rule_id"] == "BCS015" && r["message"] == "bits:prove cannot waive a hard violation"
+        r["rule_id"] == "BCS015"
+            && r["message"] == "bits:prove cannot waive a hard violation"
     }));
     assert!(
-        results
-            .iter()
-            .any(|r| { r["rule_id"] == "BCS003" && r["severity"] == "violation" })
+        results.iter().any(|r| {
+            r["rule_id"] == "BCS003" && r["severity"] == "violation"
+        })
     );
 
     let malformed = "// bits:prove(BCS010): single part only\nfunction ok() {\n  return 1;\n}\n";
@@ -602,7 +606,8 @@ fn bits_prove_marks_warnings_for_critic_and_rejects_hard_violations() {
 
     let unused = "// bits:prove(BCS010): legacy name; framework requires it\nfunction ok() {\n  return 1;\n}\n";
     assert!(scan("js", unused).iter().any(|r| {
-        r["rule_id"] == "BCS015" && r["message"] == "unused bits:prove must be deleted"
+        r["rule_id"] == "BCS015"
+            && r["message"] == "unused bits:prove must be deleted"
     }));
 }
 
@@ -653,9 +658,9 @@ fn defaulted_and_keyword_only_bools_are_not_boolean_traps() {
 
     let positional = "def run(enabled: bool) -> bool:\n    return enabled\n";
     assert!(
-        scan("py", positional)
-            .iter()
-            .any(|r| { r["rule_id"] == "BCS004" && r["severity"] == "violation" })
+        scan("py", positional).iter().any(|r| {
+            r["rule_id"] == "BCS004" && r["severity"] == "violation"
+        })
     );
 }
 
@@ -703,8 +708,7 @@ fn python_main_guard_typed_constants_and_optional_import_are_not_globals() {
 
 #[test]
 fn bcs017_detects_direct_indirect_cross_file_and_custom_io_taint() {
-    let direct =
-        "# bits:spec(pure)\ndef size(path: str) -> int:\n    return len(open(path).read())\n";
+    let direct = "# bits:spec(pure)\ndef size(path: str) -> int:\n    return len(open(path).read())\n";
     let results = scan("py", direct);
     assert!(results.iter().any(|r| {
         r["rule_id"] == "BCS017"
@@ -717,7 +721,8 @@ fn bcs017_detects_direct_indirect_cross_file_and_custom_io_taint() {
     assert!(
         scan("py", indirect)
             .iter()
-            .any(|r| r["rule_id"] == "BCS017" && r["range"]["start"]["line"] == 6)
+            .any(|r| r["rule_id"] == "BCS017"
+                && r["range"]["start"]["line"] == 6)
     );
 
     let alias = "import os as o\n\n\n# bits:spec(pure)\ndef home() -> str:\n    return o.getenv(\"HOME\")\n";
@@ -764,7 +769,8 @@ fn bcs017_detects_direct_indirect_cross_file_and_custom_io_taint() {
 }
 
 #[test]
-fn improving_ratchet_rewards_reduction_but_blocks_regressions_and_new_functions() {
+fn improving_ratchet_rewards_reduction_but_blocks_regressions_and_new_functions()
+ {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     let file = root.join("legacy.py");
@@ -863,7 +869,8 @@ fn cognitive_v1_matches_sonar_whitepaper_golden_cases() {
     let results = scan("js", &high_cognitive);
     assert!(results.iter().any(|r| {
         r["rule_id"] == "BCS003"
-            && r["message"] == "cognitive complexity exceeds fifteen (cognitive_v1 shadow)"
+            && r["message"]
+                == "cognitive complexity exceeds fifteen (cognitive_v1 shadow)"
             && r["severity"] == "warning"
     }));
 }
@@ -882,18 +889,18 @@ fn collapsible_if_identical_arms_and_useless_rethrow_are_warnings() {
 
     let same_arms = "def f(kind: str, event: object) -> None:\n    if kind == \"a\":\n        record(event)\n    elif kind == \"b\":\n        record(event)\n    else:\n        ignore(event)\n";
     assert!(scan("py", same_arms).iter().any(|r| {
-        r["rule_id"] == "BCS016" && r["message"] == "adjacent branches have identical bodies"
+        r["rule_id"] == "BCS016"
+            && r["message"] == "adjacent branches have identical bodies"
     }));
     let narrowing = "function f(x: unknown) {\n  if (typeof x === \"string\") {\n    console.log(x.length);\n  } else if (typeof x === \"number\") {\n    console.log(x.length);\n  }\n}\n";
     assert_no_rule(&scan("ts", narrowing), "BCS016");
 
-    let useless_try =
-        "def f() -> None:\n    try:\n        work()\n    except Error:\n        raise\n";
+    let useless_try = "def f() -> None:\n    try:\n        work()\n    except Error:\n        raise\n";
     assert!(scan("py", useless_try).iter().any(|r| {
-        r["rule_id"] == "BCS013" && r["message"] == "useless try block that only rethrows"
+        r["rule_id"] == "BCS013"
+            && r["message"] == "useless try block that only rethrows"
     }));
-    let verbose =
-        "def f() -> None:\n    try:\n        work()\n    except Error as exc:\n        raise exc\n";
+    let verbose = "def f() -> None:\n    try:\n        work()\n    except Error as exc:\n        raise exc\n";
     assert!(scan("py", verbose).iter().any(|r| {
         r["rule_id"] == "BCS013"
             && r["message"]
@@ -908,16 +915,17 @@ fn assertion_explicit_side_effects_are_hard_errors_but_pure_calls_pass() {
     let walrus = "def f() -> None:\n    assert (frame := read_frame())\n";
     assert!(scan("py", walrus).iter().any(|r| {
         r["rule_id"] == "BCS006"
-            && r["message"] == "assertion condition must not contain explicit side effects"
+            && r["message"]
+                == "assertion condition must not contain explicit side effects"
             && r["severity"] == "violation"
     }));
     let increment = "assert(i++ > 0);\n";
     assert!(scan("js", increment).iter().any(|r| {
         r["rule_id"] == "BCS006"
-            && r["message"] == "assertion condition must not contain explicit side effects"
+            && r["message"]
+                == "assertion condition must not contain explicit side effects"
     }));
-    let pure =
-        "def f(items: list[int]) -> None:\n    assert len(items) > 0\n    assert is_valid(items)\n";
+    let pure = "def f(items: list[int]) -> None:\n    assert len(items) > 0\n    assert is_valid(items)\n";
     assert_no_rule(&scan("py", pure), "BCS006");
 }
 
@@ -933,7 +941,8 @@ fn prove_test_references_must_resolve_uniquely_and_diff_bans_new_explain() {
     let results = scan("js", &with_missing);
     assert!(results.iter().any(|r| {
         r["rule_id"] == "BCS015"
-            && r["message"] == "bits:prove test reference does not resolve to a known test"
+            && r["message"]
+                == "bits:prove test reference does not resolve to a known test"
     }));
 
     fs::create_dir(root.join("tests")).unwrap();
@@ -951,7 +960,8 @@ fn prove_test_references_must_resolve_uniquely_and_diff_bans_new_explain() {
     init_diff_repo(root);
 
     // Whole-file scan still accepts legacy bits:explain (no repo-wide breakage).
-    let output = bits(&["style", "check", root.join("legacy.py").to_str().unwrap()]);
+    let output =
+        bits(&["style", "check", root.join("legacy.py").to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0));
 
     // Adding a new bits:explain in diff mode is a hard error.
@@ -973,7 +983,8 @@ fn prove_test_references_must_resolve_uniquely_and_diff_bans_new_explain() {
             .iter()
             .any(|r| {
                 r["rule_id"] == "BCS015"
-                    && r["message"] == "new bits:explain is forbidden in diff mode"
+                    && r["message"]
+                        == "new bits:explain is forbidden in diff mode"
             })
     );
 
@@ -1039,7 +1050,9 @@ fn environment_reads_are_boundary_warnings_not_hard_errors() {
         "import os\n\ndef load():\n    return os.getenv(\"HOME\")\n",
     );
     assert!(results.iter().any(|r| {
-        r["rule_id"] == "BCS011" && r["severity"] == "warning" && r["category"] == "state-gain"
+        r["rule_id"] == "BCS011"
+            && r["severity"] == "warning"
+            && r["category"] == "state-gain"
     }));
 }
 
@@ -1077,11 +1090,12 @@ fn go_context_rules_require_real_context_import_and_usage() {
 
 #[test]
 fn go_dot_import_warns_outside_tests() {
-    let bad = "package main\n\nimport . \"fmt\"\n\nfunc main() { Println(\"hi\") }\n";
+    let bad =
+        "package main\n\nimport . \"fmt\"\n\nfunc main() { Println(\"hi\") }\n";
     assert!(
-        scan("go", bad)
-            .iter()
-            .any(|r| { r["rule_id"] == "BCS014" && r["severity"] == "warning" })
+        scan("go", bad).iter().any(|r| {
+            r["rule_id"] == "BCS014" && r["severity"] == "warning"
+        })
     );
 
     let directory = tempfile::tempdir().unwrap();
@@ -1139,13 +1153,9 @@ fn go_taint_sources_and_test_index_work() {
             .any(|r| r["rule_id"] == "BCS015"),
         "unexpected proof errors: {report:#?}"
     );
-    assert!(
-        report["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|r| { r["rule_id"] == "BCS003" && r["obligation"] == "critic_review" })
-    );
+    assert!(report["results"].as_array().unwrap().iter().any(|r| {
+        r["rule_id"] == "BCS003" && r["obligation"] == "critic_review"
+    }));
 }
 
 #[test]

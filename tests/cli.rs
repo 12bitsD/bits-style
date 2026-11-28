@@ -76,18 +76,21 @@ fn invalid_files_report_expected_rule_ids() {
         (
             "invalid/sample.py",
             [
-                "BCS001", "BCS004", "BCS005", "BCS010", "BCS011", "BCS014", "BCS015",
+                "BCS001", "BCS004", "BCS005", "BCS010", "BCS011", "BCS014",
+                "BCS015",
             ]
             .as_slice(),
         ),
         (
             "invalid/sample.c",
-            ["BCS001", "BCS004", "BCS009", "BCS010", "BCS011", "BCS012"].as_slice(),
+            ["BCS001", "BCS004", "BCS009", "BCS010", "BCS011", "BCS012"]
+                .as_slice(),
         ),
         (
             "invalid/sample.js",
             [
-                "BCS001", "BCS004", "BCS005", "BCS009", "BCS010", "BCS011", "BCS014",
+                "BCS001", "BCS004", "BCS005", "BCS009", "BCS010", "BCS011",
+                "BCS014",
             ]
             .as_slice(),
         ),
@@ -96,7 +99,8 @@ fn invalid_files_report_expected_rule_ids() {
             ["BCS004", "BCS010", "BCS011", "BCS014"].as_slice(),
         ),
     ] {
-        let output = bits(&["style", "check", &fixture(file), "--format", "json"]);
+        let output =
+            bits(&["style", "check", &fixture(file), "--format", "json"]);
         assert_eq!(output.status.code(), Some(1));
         let ids = rule_ids(&output);
         for expected in expected {
@@ -139,8 +143,10 @@ fn report_validates_against_the_public_schema() {
         "json",
     ]);
     let schema: Value =
-        serde_json::from_str(include_str!("../schemas/report.schema.json")).unwrap();
-    let validator = jsonschema::validator_for(&schema).expect("schema must compile");
+        serde_json::from_str(include_str!("../schemas/report.schema.json"))
+            .unwrap();
+    let validator =
+        jsonschema::validator_for(&schema).expect("schema must compile");
     validator
         .validate(&json(&output))
         .expect("report must match schema");
@@ -148,7 +154,8 @@ fn report_validates_against_the_public_schema() {
 
 #[test]
 fn dependency_cycles_return_one() {
-    let output = bits(&["style", "check", "tests/fixtures/cycle", "--format", "json"]);
+    let output =
+        bits(&["style", "check", "tests/fixtures/cycle", "--format", "json"]);
     assert_eq!(output.status.code(), Some(1));
     assert!(rule_ids(&output).contains(&"BCS014".to_owned()));
 }
@@ -177,7 +184,8 @@ fn fix_is_effective_and_idempotent() {
     )
     .unwrap();
 
-    let first = bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
+    let first =
+        bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
     assert_eq!(
         first.status.code(),
         Some(0),
@@ -192,7 +200,8 @@ fn fix_is_effective_and_idempotent() {
     assert_eq!(json(&first)["summary"]["files_fixed"], 1);
     assert_eq!(json(&first)["summary"]["violations_fixed"], 3);
 
-    let second = bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
+    let second =
+        bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
     assert_eq!(second.status.code(), Some(0));
     assert_eq!(fs::read_to_string(&path).unwrap(), fixed);
     assert_eq!(json(&second)["summary"]["files_fixed"], 0);
@@ -207,7 +216,8 @@ fn fix_preserves_nested_python_indentation() {
         "def outer(flag):\n\tif flag:\n\t\treturn 1\n\treturn 0\n",
     )
     .unwrap();
-    let output = bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
+    let output =
+        bits(&["style", "fix", path.to_str().unwrap(), "--format", "json"]);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -225,7 +235,8 @@ fn fix_preserves_nested_python_indentation() {
 fn fix_preserves_multiline_string_contents() {
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("sample.py");
-    let source = "def message():\n    return \"\"\"first\n    keep  \nlast\"\"\"";
+    let source =
+        "def message():\n    return \"\"\"first\n    keep  \nlast\"\"\"";
     fs::write(&path, source).unwrap();
     let output = bits(&["style", "fix", path.to_str().unwrap()]);
     assert_eq!(output.status.code(), Some(0));
@@ -309,7 +320,8 @@ fn config_excludes_files_from_discovery() {
     let directory = tempfile::tempdir().unwrap();
     let root = directory.path();
     fs::write(root.join("keep.py"), "def valid():\n\treturn 1\n").unwrap();
-    fs::write(root.join("skip.py"), "def invalid():\n        return 1\n").unwrap();
+    fs::write(root.join("skip.py"), "def invalid():\n        return 1\n")
+        .unwrap();
     let config = root.join("bits.toml");
     fs::write(&config, "exclude = [\"skip.py\"]\n").unwrap();
     let output = bits(&[
@@ -336,7 +348,8 @@ fn changed_and_staged_scopes_use_git_diff() {
     run_git(root, &["commit", "-qm", "initial"]);
 
     fs::write(&file, "def valid():\n        return 1\n").unwrap();
-    let changed = bits(&["style", "report", root.to_str().unwrap(), "--changed"]);
+    let changed =
+        bits(&["style", "report", root.to_str().unwrap(), "--changed"]);
     assert_eq!(json(&changed)["summary"]["files_scanned"], 1);
 
     run_git(root, &["add", "sample.py"]);
@@ -358,7 +371,9 @@ fn output_file_receives_machine_report() {
     ]);
     assert_eq!(output.status.code(), Some(0));
     assert!(output.stdout.is_empty());
-    let report: Value = serde_json::from_str(&fs::read_to_string(output_path).unwrap()).unwrap();
+    let report: Value =
+        serde_json::from_str(&fs::read_to_string(output_path).unwrap())
+            .unwrap();
     assert_eq!(report["status"], "passed");
 }
 
@@ -390,7 +405,8 @@ fn inline_suppression_is_scoped_and_validated() {
     let report = json(&output);
     assert_eq!(report["status"], "violation");
     assert!(!report["results"].as_array().unwrap().iter().any(|result| {
-        result["rule_id"] == "BCS011" && result["actual"] == "global_counter = 0"
+        result["rule_id"] == "BCS011"
+            && result["actual"] == "global_counter = 0"
     }));
     assert!(report["results"].as_array().unwrap().iter().any(|result| {
         result["rule_id"] == "BCS011" && result["actual"] == "other_counter = 1"
@@ -457,13 +473,11 @@ fn baseline_suppresses_only_exact_existing_violations() {
         "--format",
         "json",
     ]);
-    assert!(
-        json(&new_file)["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|result| { result["file"] == "new.py" && result["rule_id"] == "BCS011" })
-    );
+    assert!(json(&new_file)["results"].as_array().unwrap().iter().any(
+        |result| {
+            result["file"] == "new.py" && result["rule_id"] == "BCS011"
+        }
+    ));
 }
 
 #[test]
@@ -547,13 +561,11 @@ fn diff_only_reports_added_lines_and_honors_commit() {
         "--format",
         "json",
     ]);
-    assert!(
-        json(&untracked)["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|result| { result["file"] == "new.py" && result["actual"] == "new_counter = 3" })
-    );
+    assert!(json(&untracked)["results"].as_array().unwrap().iter().any(
+        |result| {
+            result["file"] == "new.py" && result["actual"] == "new_counter = 3"
+        }
+    ));
 }
 
 #[test]
@@ -589,7 +601,8 @@ fn diff_checks_functions_whose_bodies_contain_added_lines() {
     );
     let results = json(&output);
     assert!(results["results"].as_array().unwrap().iter().any(|result| {
-        result["rule_id"] == "BCS003" && result["message"] == "function exceeds 48 code lines"
+        result["rule_id"] == "BCS003"
+            && result["message"] == "function exceeds 48 code lines"
     }));
 }
 

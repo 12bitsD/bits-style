@@ -3,13 +3,19 @@ use tree_sitter::{Node, Tree};
 use crate::analyze;
 use crate::language::Language;
 
-pub fn collect_tests(language: Language, source: &str, tree: &Tree) -> Vec<String> {
+pub fn collect_tests(
+    language: Language,
+    source: &str,
+    tree: &Tree,
+) -> Vec<String> {
     let mut tests = Vec::new();
     visit(tree.root_node(), &mut |node| match language {
         Language::Python => collect_python_test(source, node, &mut tests),
         Language::Rust => collect_rust_test(source, node, &mut tests),
         Language::Go => collect_go_test(source, node, &mut tests),
-        _ if language.is_script() => collect_script_test(source, node, &mut tests),
+        _ if language.is_script() => {
+            collect_script_test(source, node, &mut tests)
+        }
         _ => {}
     });
     tests
@@ -26,7 +32,12 @@ pub fn is_test_file_path(relative: &str) -> bool {
         || name.ends_with("_test.rs")
         || matches!(
             name,
-            "tests.rs" | "test.rs" | "mocks.rs" | "mock.rs" | "testing.rs" | "test_utils.rs"
+            "tests.rs"
+                | "test.rs"
+                | "mocks.rs"
+                | "mock.rs"
+                | "testing.rs"
+                | "test_utils.rs"
         )
         || name.contains(".test.")
         || name.contains(".spec.")
@@ -45,8 +56,8 @@ fn collect_python_test(source: &str, node: Node, tests: &mut Vec<String>) {
     if node.kind() != "function_definition" {
         return;
     }
-    let Some(name) =
-        analyze::function_name(node).map(|name_node| analyze::node_text(source, name_node))
+    let Some(name) = analyze::function_name(node)
+        .map(|name_node| analyze::node_text(source, name_node))
     else {
         return;
     };
@@ -80,8 +91,8 @@ fn collect_go_test(source: &str, node: Node, tests: &mut Vec<String>) {
     if node.kind() != "function_declaration" {
         return;
     }
-    if let Some(name) =
-        analyze::function_name(node).map(|name_node| analyze::node_text(source, name_node))
+    if let Some(name) = analyze::function_name(node)
+        .map(|name_node| analyze::node_text(source, name_node))
         && (name.starts_with("Test") || name.starts_with("Benchmark"))
     {
         tests.push(name.to_owned());
@@ -99,7 +110,10 @@ fn collect_rust_test(source: &str, node: Node, tests: &mut Vec<String>) {
             break;
         }
         let text = analyze::node_text(source, current);
-        if text.contains("#[test]") || text.contains("::test]") || text.contains("#[rstest") {
+        if text.contains("#[test]")
+            || text.contains("::test]")
+            || text.contains("#[rstest")
+        {
             is_test = true;
         }
         sibling = current.prev_named_sibling();

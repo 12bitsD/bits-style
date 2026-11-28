@@ -37,7 +37,8 @@ fn assert_rule(results: &[Value], rule: &str) {
 
 #[test]
 fn bcs002_allows_only_long_user_visible_strings() {
-    let long_string = format!("def message():\n\treturn \"{}\"\n", "a".repeat(100));
+    let long_string =
+        format!("def message():\n\treturn \"{}\"\n", "a".repeat(100));
     assert!(
         !scan("py", &long_string)
             .iter()
@@ -50,7 +51,8 @@ fn bcs002_allows_only_long_user_visible_strings() {
 
 #[test]
 fn bcs003_checks_function_lines_nesting_locals_and_complexity() {
-    let long_function = format!("def long_function():\n{}", "\tvalue = 1\n".repeat(49));
+    let long_function =
+        format!("def long_function():\n{}", "\tvalue = 1\n".repeat(49));
     let results = scan("py", &long_function);
     assert!(results.iter().any(|result| result["rule_id"] == "BCS003"
         && result["message"] == "function exceeds 48 code lines"));
@@ -83,11 +85,8 @@ fn bcs003_checks_function_lines_nesting_locals_and_complexity() {
 fn bcs005_rejects_backward_goto() {
     let source = "int update(int value)\n{\nout_done:\n\treturn value;\n\tgoto out_done;\n}\n";
     let results = scan("c", source);
-    assert!(
-        results
-            .iter()
-            .any(|result| result["rule_id"] == "BCS005" && result["actual"] == "backward_jump")
-    );
+    assert!(results.iter().any(|result| result["rule_id"] == "BCS005"
+        && result["actual"] == "backward_jump"));
 }
 
 #[test]
@@ -135,7 +134,8 @@ fn bcs010_rejects_non_pascal_type_names() {
 
 #[test]
 fn bcs011_rejects_implicit_environment_input() {
-    let source = "import os\n\ndef read_value():\n\treturn os.getenv(\"HOME\")\n";
+    let source =
+        "import os\n\ndef read_value():\n\treturn os.getenv(\"HOME\")\n";
     assert_rule(&scan("py", source), "BCS011");
 }
 
@@ -147,11 +147,10 @@ fn bcs012_rejects_conditional_compilation_inside_functions() {
 
 #[test]
 fn bcs013_rejects_empty_catch_and_forged_success() {
-    let empty =
-        "def parse(value):\n\ttry:\n\t\treturn int(value)\n\texcept ValueError:\n\t\tpass\n";
+    let empty = "def parse(value):\n\ttry:\n\t\treturn int(value)\n\texcept ValueError:\n\t\tpass\n";
     assert_rule(&scan("py", empty), "BCS013");
 
-    let forged = "function parse(value)\n{\n\ttry {\n\t\treturn Number(value);\n\t} catch (error) {\n\t\treturn false;\n\t}\n}\n";
+    let forged = "function parse(value)\n{\n\ttry {\n\t\treturn Number(value);\n\t} catch (error) {\n\t\treturn true;\n\t}\n}\n";
     assert_rule(&scan("js", forged), "BCS013");
 
     let cpp = "int parse(int value)\n{\n\ttry {\n\t\treturn value;\n\t} catch (...) {\n\t}\n}\n";

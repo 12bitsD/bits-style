@@ -72,7 +72,8 @@ fn python_call_keywords_are_not_function_calls() {
 
 #[test]
 fn imports_used_in_template_expressions_count_as_references() {
-    let python = "from uuid import uuid4\n\ndef make_id():\n    return f\"{uuid4()}\"\n";
+    let python =
+        "from uuid import uuid4\n\ndef make_id():\n    return f\"{uuid4()}\"\n";
     assert_empty(&scan("py", python));
 
     let javascript = "import { randomUUID } from \"crypto\";\n\nexport function makeId() {\n  return `${randomUUID()}`;\n}\n";
@@ -170,8 +171,7 @@ fn rust_unwrap_and_panic_are_delegated_to_clippy() {
 
 #[test]
 fn rust_match_arms_follow_profile_indentation() {
-    let source =
-        "fn classify(value: i32) -> i32 {\n    match value {\n    1 => 1,\n    _ => 0,\n    }\n}\n";
+    let source = "fn classify(value: i32) -> i32 {\n    match value {\n    1 => 1,\n    _ => 0,\n    }\n}\n";
     let results = scan("rs", source);
     assert!(!results.iter().any(|result| result["rule_id"] == "BCS008"));
 }
@@ -181,9 +181,8 @@ fn rust_trait_imports_are_not_unused_by_identifier_count() {
     let source = "use std::io::Write;\n\nfn write_all<W: Write>(writer: &mut W, bytes: &[u8]) {\n    writer.write_all(bytes).unwrap();\n}\n";
     let results = scan("rs", source);
     assert!(
-        !results
-            .iter()
-            .any(|result| result["rule_id"] == "BCS014" && result["actual"] == "Write")
+        !results.iter().any(|result| result["rule_id"] == "BCS014"
+            && result["actual"] == "Write")
     );
 }
 

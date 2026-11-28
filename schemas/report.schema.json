@@ -58,7 +58,12 @@
           "explanation": { "type": "string" },
           "category": { "enum": ["level-purity", "control-flow", "state-gain", "symmetry", "role"] },
           "obligation": { "enum": ["refactor", "prove_minimalism", "critic_review", "ratchet_improving"] },
-          "improving": { "type": "boolean" }
+          "improving": { "type": "boolean" },
+          "hotspots": {
+            "type": "array",
+            "items": { "type": "string" }
+          },
+          "prescription": { "type": "string" }
         }
       }
     },
@@ -103,13 +108,27 @@
         "proves": { "type": "integer", "minimum": 0 },
         "improving": { "type": "integer", "minimum": 0 },
         "functions_checked": { "type": "integer", "minimum": 0 },
-        "functions_with_warnings": { "type": "integer", "minimum": 0 }
+        "functions_with_warnings": { "type": "integer", "minimum": 0 },
+        "stale_baseline_entries": { "type": "integer", "minimum": 0 }
       }
     },
     "fixes": { "type": "array" },
     "unsupported": {
       "type": "array",
       "items": { "type": "string" }
+    },
+    "allows": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["rule_id", "file", "line", "reason"],
+        "properties": {
+          "rule_id": { "$ref": "#/$defs/ruleId" },
+          "file": { "type": "string" },
+          "line": { "type": "integer", "minimum": 1 },
+          "reason": { "type": "string" }
+        }
+      }
     }
   },
   "$defs": {

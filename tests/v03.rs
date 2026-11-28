@@ -46,7 +46,8 @@ fn bcs003_is_a_warning_and_carries_explanation() {
         "  validate();\n".repeat(48)
     );
     fs::write(&path, source).unwrap();
-    let output = bits(&["style", "check", path.to_str().unwrap(), "--format", "json"]);
+    let output =
+        bits(&["style", "check", path.to_str().unwrap(), "--format", "json"]);
     assert_eq!(
         output.status.code(),
         Some(0),
@@ -64,7 +65,7 @@ fn bcs003_is_a_warning_and_carries_explanation() {
 }
 
 #[test]
-fn unsupported_languages_are_explicit_and_do_not_pass() {
+fn unsupported_languages_are_skipped_in_dir_scan_and_strict_or_explicit_fail() {
     let directory = tempfile::tempdir().unwrap();
     fs::write(directory.path().join("lib.rs"), "fn main() {}\n").unwrap();
     fs::write(
@@ -72,7 +73,8 @@ fn unsupported_languages_are_explicit_and_do_not_pass() {
         "package main\n\nfunc main() {}\n",
     )
     .unwrap();
-    fs::write(directory.path().join("Main.java"), "class Main {}\n").unwrap();
+    let java = directory.path().join("Main.java");
+    fs::write(&java, "class Main {}\n").unwrap();
     let report = bits(&[
         "style",
         "report",
@@ -82,19 +84,35 @@ fn unsupported_languages_are_explicit_and_do_not_pass() {
     ]);
     assert_eq!(report.status.code(), Some(0));
     let report = json(&report);
-    assert_eq!(report["status"], "unsupported");
+    assert_eq!(report["status"], "passed");
     assert_eq!(report["summary"]["unsupported_files"], 1);
     assert_eq!(report["summary"]["files_scanned"], 2);
     assert_eq!(report["unsupported"], serde_json::json!(["Main.java"]));
 
-    let check = bits(&[
+    let check_default = bits(&[
         "style",
         "check",
         directory.path().to_str().unwrap(),
         "--format",
         "json",
     ]);
-    assert_eq!(check.status.code(), Some(2));
+    assert_eq!(check_default.status.code(), Some(0));
+
+    let check_strict = bits(&[
+        "style",
+        "check",
+        directory.path().to_str().unwrap(),
+        "--strict-unsupported",
+        "--format",
+        "json",
+    ]);
+    assert_eq!(check_strict.status.code(), Some(2));
+    assert_eq!(json(&check_strict)["status"], "unsupported");
+
+    let check_explicit =
+        bits(&["style", "check", java.to_str().unwrap(), "--format", "json"]);
+    assert_eq!(check_explicit.status.code(), Some(2));
+    assert_eq!(json(&check_explicit)["status"], "unsupported");
 }
 
 #[test]
@@ -256,7 +274,9 @@ fn commit_options_are_rejected_instead_of_silently_passing() {
         "json",
     ]);
     assert_eq!(output.status.code(), Some(2));
-    assert!(String::from_utf8_lossy(&output.stderr).contains("invalid diff commit"));
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("invalid diff commit")
+    );
 }
 
 #[test]
@@ -335,12 +355,11 @@ fn python_variables_follow_snake_case() {
         "def update():\n    badName = 1\n    return badName\n",
     )
     .unwrap();
-    let output = bits(&["style", "check", path.to_str().unwrap(), "--format", "json"]);
-    assert!(
-        json(&output)["results"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .any(|result| { result["rule_id"] == "BCS010" && result["actual"] == "badName" })
-    );
+    let output =
+        bits(&["style", "check", path.to_str().unwrap(), "--format", "json"]);
+    assert!(json(&output)["results"].as_array().unwrap().iter().any(
+        |result| {
+            result["rule_id"] == "BCS010" && result["actual"] == "badName"
+        }
+    ));
 }
