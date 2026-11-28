@@ -1,0 +1,46 @@
+min_version = "0.6.0"
+
+[[layers]]
+name = "model"
+paths = ["src/model.rs", "src/language.rs", "src/test_index.rs"]
+forbid_imports = ["analysis", "design", "taint", "text", "discovery", "report", "scanner", "bench"]
+
+[[layers]]
+name = "analysis"
+paths = ["src/analyze/**"]
+forbid_imports = ["design", "taint", "text", "discovery", "report", "scanner", "bench"]
+
+[[layers]]
+name = "design"
+paths = ["src/design/**"]
+forbid_imports = ["taint", "text", "discovery", "report", "scanner", "bench"]
+
+[[layers]]
+name = "taint"
+paths = ["src/taint/**"]
+forbid_imports = ["design", "text", "discovery", "report", "scanner", "bench"]
+
+[[layers]]
+name = "text"
+paths = ["src/text/**"]
+forbid_imports = ["analysis", "design", "taint", "discovery", "report", "scanner", "bench"]
+
+[[layers]]
+name = "discovery"
+paths = ["src/discovery/**"]
+forbid_imports = ["analysis", "design", "taint", "text", "report", "scanner", "bench"]
+
+[[layers]]
+name = "report"
+paths = ["src/report/**"]
+forbid_imports = ["analysis", "design", "taint", "text", "discovery", "scanner", "bench"]
+
+[[layers]]
+name = "scanner"
+paths = ["src/scanner/**"]
+forbid_imports = ["bench"]
+
+[[layers]]
+name = "bench"
+paths = ["src/bench/**"]
+forbid_imports = ["analysis", "design", "taint", "text", "discovery", "report"]

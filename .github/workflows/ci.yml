@@ -29,3 +29,5 @@ jobs:
         run: cargo clippy --all-targets --locked -- -D warnings
       - name: Run tests
         run: cargo test --locked
+      - name: Dogfood bits style check
+        run: cargo run --locked -- style check src --config bits.toml --format compact
